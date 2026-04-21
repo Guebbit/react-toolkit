@@ -1,0 +1,41 @@
+# @guebbit/react-toolkit
+
+React + Zustand toolkit ported from `@guebbit/vue-toolkit`.
+
+## Install
+
+```bash
+npm i @guebbit/react-toolkit react zustand zod
+```
+
+## Exports
+
+- `useCoreStore` (Zustand)
+- `useNotificationsStore` (Zustand)
+- `useStructureDataManagement`
+- `useStructureRestApi`
+- `useStructureFormValidation`
+
+## Vue -> React mapping
+
+- Vue composables -> toolkit hooks (`use*`)
+- Pinia stores -> Zustand stores
+- `ref/computed` values are exposed via `.value` compatibility refs
+
+## Examples
+
+### Hook
+
+```ts
+const users = useStructureDataManagement<{ id: number; name: string }>('id');
+users.addRecord({ id: 1, name: 'Ada' });
+console.log(users.itemList.value);
+```
+
+### Zustand store
+
+```ts
+const notifications = useNotificationsStore.getState();
+notifications.addMessage('Saved');
+console.log(notifications.messages());
+```
