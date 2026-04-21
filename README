@@ -20,7 +20,7 @@ npm i @guebbit/react-toolkit react zustand zod
 
 - Vue composables -> toolkit hooks (`use*`)
 - Pinia stores -> Zustand stores
-- `ref/computed` values are exposed via `.value` compatibility refs
+- Vue `ref/reactive/computed` logic -> React state/memo/ref patterns
 
 ## Examples
 
@@ -29,7 +29,7 @@ npm i @guebbit/react-toolkit react zustand zod
 ```ts
 const users = useStructureDataManagement<{ id: number; name: string }>('id');
 users.addRecord({ id: 1, name: 'Ada' });
-console.log(users.itemList.value);
+console.log(users.itemList);
 ```
 
 ### Zustand store
