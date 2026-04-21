@@ -102,6 +102,7 @@ export interface IStructureRestApi {
 const isSafeObjectKey = (key: number | string) =>
     key !== '__proto__' && key !== 'constructor' && key !== 'prototype';
 const createSafeDictionary = <V>() => Object.create(null) as Record<string, V>;
+type CacheMap<Key extends string | number = string | number> = Map<Key, number>;
 
 export const useStructureRestApi = <
     // type of item
@@ -174,10 +175,10 @@ export const useStructureRestApi = <
      */
     const lastUpdate = {
         [ELastUpdateKeywords.ALL]: 0,
-        [ELastUpdateKeywords.TARGET]: createSafeDictionary<number>() as Record<K, number>,
-        [ELastUpdateKeywords.PARENT]: createSafeDictionary<number>() as Record<P, number>,
-        [ELastUpdateKeywords.ONLINE]: createSafeDictionary<number>(),
-        [ELastUpdateKeywords.GENERIC]: createSafeDictionary<number>()
+        [ELastUpdateKeywords.TARGET]: new Map<K, number>(),
+        [ELastUpdateKeywords.PARENT]: new Map<P, number>(),
+        [ELastUpdateKeywords.ONLINE]: new Map<string, number>(),
+        [ELastUpdateKeywords.GENERIC]: new Map<string, number>()
     };
 
     /**
@@ -188,20 +189,13 @@ export const useStructureRestApi = <
         if (branch === ELastUpdateKeywords.ALL) {
             lastUpdate[branch] = 0;
         } else if (branch) {
-            // @ts-expect-error would be a pain to fully type and it's not needed
-            lastUpdate[branch] = createSafeDictionary<number>();
+            lastUpdate[branch] = new Map();
         } else {
             lastUpdate[ELastUpdateKeywords.ALL] = 0;
-            lastUpdate[ELastUpdateKeywords.TARGET] = createSafeDictionary<number>() as Record<
-                K,
-                number
-            >;
-            lastUpdate[ELastUpdateKeywords.PARENT] = createSafeDictionary<number>() as Record<
-                P,
-                number
-            >;
-            lastUpdate[ELastUpdateKeywords.ONLINE] = createSafeDictionary<number>();
-            lastUpdate[ELastUpdateKeywords.GENERIC] = createSafeDictionary<number>();
+            lastUpdate[ELastUpdateKeywords.TARGET] = new Map<K, number>();
+            lastUpdate[ELastUpdateKeywords.PARENT] = new Map<P, number>();
+            lastUpdate[ELastUpdateKeywords.ONLINE] = new Map<string, number>();
+            lastUpdate[ELastUpdateKeywords.GENERIC] = new Map<string, number>();
         }
     };
 
@@ -220,8 +214,7 @@ export const useStructureRestApi = <
             // if ELastUpdateKeywords.ALL I ignore the key
             (branch === ELastUpdateKeywords.ALL
                 ? lastUpdate[ELastUpdateKeywords.ALL]
-                : // @ts-expect-error too intricate to typesafe. It is safe.
-                  lastUpdate[branch][key]) <
+                : (lastUpdate[branch] as CacheMap).get(key) ?? 0) <
         TTL;
 
     /**
@@ -242,8 +235,7 @@ export const useStructureRestApi = <
         if (branch === ELastUpdateKeywords.ALL) {
             lastUpdate[ELastUpdateKeywords.ALL] = value;
         } else {
-            // @ts-expect-error too intricate to typesafe. It is safe.
-            lastUpdate[branch][key] = value;
+            (lastUpdate[branch] as CacheMap).set(key, value);
         }
     };
 
@@ -621,7 +613,7 @@ export const useStructureRestApi = <
         const MAX_SEARCHES = 50;
 
         // Remove expired data entries
-        const validEntries = Object.entries(lastUpdate[ELastUpdateKeywords.ONLINE]).filter(
+        const validEntries = Array.from(lastUpdate[ELastUpdateKeywords.ONLINE].entries()).filter(
             ([_, ttl]) => ttl + TTL > Date.now()
         );
 
@@ -629,12 +621,10 @@ export const useStructureRestApi = <
         if (validEntries.length > MAX_SEARCHES) validEntries.sort((a, b) => b[1] - a[1]);
 
         // rebuild lastUpdate. Remove the oldest entries if there are too many for resources reason
-        lastUpdate[ELastUpdateKeywords.ONLINE] = Object.fromEntries(
-            validEntries.slice(0, MAX_SEARCHES)
-        );
+        lastUpdate[ELastUpdateKeywords.ONLINE] = new Map(validEntries.slice(0, MAX_SEARCHES));
 
         // Prune searchCached and searchTotals: remove entries no longer referenced by any active TTL key
-        const activeTTLKeys = Object.keys(lastUpdate[ELastUpdateKeywords.ONLINE]);
+        const activeTTLKeys = Array.from(lastUpdate[ELastUpdateKeywords.ONLINE].keys());
         for (const cacheKey of Object.keys(searchCached.value)) {
             if (!activeTTLKeys.some((ttlKey) => ttlKey.includes(cacheKey + ':'))) {
                 delete searchCached.value[cacheKey];
@@ -690,10 +680,10 @@ export const useStructureRestApi = <
         // Instead of regular checkAndEditLastUpdate, I clean up all expired searches and check if the ID is still present
         searchCleanup();
         // TTL is monodimensional so page and pageSize are added to the key (TTL ONLY)
-        if (!forced && searchTTLkey in lastUpdate[ELastUpdateKeywords.ONLINE])
+        if (!forced && lastUpdate[ELastUpdateKeywords.ONLINE].has(searchTTLkey))
             return Promise.resolve(getRecords(searchCached.value[searchKey]?.[page]));
         // Then I manually save the TTL (since I'm not using checkAndEditLastUpdate shortcut)
-        lastUpdate[ELastUpdateKeywords.ONLINE][searchTTLkey] = Date.now();
+        lastUpdate[ELastUpdateKeywords.ONLINE].set(searchTTLkey, Date.now());
 
         if (loading) startLoading(loadingKey);
 
