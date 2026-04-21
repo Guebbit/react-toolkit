@@ -99,6 +99,9 @@ export interface IStructureRestApi {
     setLoading?: (key?: string, value?: boolean) => void;
 }
 
+const isSafeObjectKey = (key: number | string) =>
+    key !== '__proto__' && key !== 'constructor' && key !== 'prototype';
+
 export const useStructureRestApi = <
     // type of item
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -227,6 +230,7 @@ export const useStructureRestApi = <
         key: number | string = '',
         branch: ELastUpdateKeywords = ELastUpdateKeywords.GENERIC
     ) => {
+        if (!isSafeObjectKey(key)) return;
         // if ELastUpdateKeywords.ALL I ignore the key
         if (branch === ELastUpdateKeywords.ALL) {
             lastUpdate[ELastUpdateKeywords.ALL] = value;
