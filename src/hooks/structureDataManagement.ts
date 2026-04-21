@@ -39,6 +39,7 @@ export const useStructureDataManagement = <
     parentHasManyRef.current = parentHasMany;
 
     /**
+     * Creates a unique identifier for an item using configured identifier fields.
      *
      * @param itemData
      * @param customIdentifiers - if specified, uses these identifiers instead of default ones

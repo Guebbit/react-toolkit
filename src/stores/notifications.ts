@@ -26,7 +26,7 @@ interface NotificationsState {
 }
 
 /**
- *
+ * Notifications store for managing toast messages and dialog visibility state.
  */
 export const useNotificationsStore = create<NotificationsState>()((set, get) => ({
     // ________________ MESSAGES (also known as toasts) ________________
