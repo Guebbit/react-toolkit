@@ -1,18 +1,50 @@
 import { useMemo, useRef, useState } from 'react';
 import { useStructureDataManagement } from './structureDataManagement';
 
+/**
+ * fetchSearch apiCall can return either a plain array or a tuple [items, total].
+ * Both shapes are handled transparently.
+ */
 export type SearchApiResult<T> = (T | undefined)[] | [(T | undefined)[], number];
 
+/**
+ * Fetch settings customization.
+ * If not set, default behavior is used.
+ */
 export interface IFetchSettings {
+    /**
+     * Ignore TTL and force the request
+     */
     forced?: boolean;
+    /**
+     * Enable loading during promises
+     */
     loading?: boolean;
+    /**
+     * Merge incoming data with existing records instead of replacing fields
+     */
     merge?: boolean;
+    /**
+     * TTL override for this specific request
+     */
     TTL?: number;
+    /**
+     * Replace the key used for TTL management
+     */
     lastUpdateKey?: string;
+    /**
+     * Change the key used for loading management
+     */
     loadingKey?: string;
+    /**
+     * When true, skip updating per-item TARGET TTL after save
+     */
     mismatch?: boolean;
 }
 
+/**
+ * Time To Live and Last Update buckets used for caching
+ */
 export enum ELastUpdateKeywords {
     ALL = '_all',
     TARGET = '_target',
@@ -23,10 +55,18 @@ export enum ELastUpdateKeywords {
 
 export type ISearchCache<K = string | number> = Record<string, Record<number, K[]>>;
 
+/**
+ * Hook customization settings
+ */
 export interface IStructureRestApi {
+    // The identification parameter of the item (READONLY and not exported)
+    // WARNING: ORDER SENSITIVE (if multiple). VERY IMPORTANT.
     identifiers?: string | string[];
+    // Unique key for loading management (if falsy: doesn't update global loading state)
     loadingKey?: string;
+    // Time To Live for fetches
     TTL?: number;
+    // Delimiter for multiple identifiers
     delimiter?: string;
     getLoading?: (key?: string) => boolean;
     setLoading?: (key?: string, value?: boolean) => void;
@@ -42,16 +82,20 @@ const createSafeDictionary = <V>() => Object.create(null) as Record<string, V>;
 export const useStructureRestApi = <
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     T extends Record<string | number, any> = Record<string, any>,
+    // Extract only string/number keys to keep cache keys manageable
     K extends string | number = Extract<keyof T, string | number>,
     P extends string | number = string | number
 >({
     identifiers = 'id',
     loadingKey = crypto.randomUUID(),
-    TTL = 3_600_000,
+    TTL = 3_600_000, // 1 hour
     delimiter = '|',
     getLoading,
     setLoading
 }: IStructureRestApi = {}) => {
+    /**
+     * Inherited from structureDataManagement
+     */
     const {
         createIdentifier,
         identifier: identifierKey,
@@ -83,6 +127,9 @@ export const useStructureRestApi = <
         getListByParent
     } = useStructureDataManagement<T, K, P>(identifiers, delimiter);
 
+    /**
+     * Loading management
+     */
     const [localLoading, setLocalLoading] = useState(false);
     const loading = useMemo(
         () => (getLoading ? getLoading(loadingKey) : localLoading),
@@ -95,6 +142,9 @@ export const useStructureRestApi = <
     const stopLoading = (postfix = '') =>
         loadingKey && setLoading ? setLoading(loadingKey + postfix, false) : setLocalLoading(false);
 
+    /**
+     * Cache ages for fetch variants
+     */
     const lastUpdateRef = useRef({
         [ELastUpdateKeywords.ALL]: 0,
         [ELastUpdateKeywords.TARGET]: new Map<K, number>(),
@@ -108,6 +158,9 @@ export const useStructureRestApi = <
     const searchCachedRef = useRef(searchCached);
     searchCachedRef.current = searchCached;
 
+    /**
+     * Reset cache ages
+     */
     const resetLastUpdate = (branch?: ELastUpdateKeywords) => {
         const lastUpdate = lastUpdateRef.current;
         if (branch === ELastUpdateKeywords.ALL) {
@@ -137,6 +190,9 @@ export const useStructureRestApi = <
         );
     };
 
+    /**
+     * Update cache age for a specific key/bucket
+     */
     const editLastUpdate = (
         value = 0,
         key: number | string = '',
@@ -171,6 +227,10 @@ export const useStructureRestApi = <
         return items;
     }
 
+    /**
+     * Generic fetch helper for loading + generic TTL check.
+     * If cached, resolves undefined because this helper is response-agnostic.
+     */
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const fetchAny = <F = any>(
         asyncCall: () => Promise<F>,
@@ -186,6 +246,9 @@ export const useStructureRestApi = <
             .finally(() => loading && stopLoading(loadingKey));
     };
 
+    /**
+     * Fetch full list
+     */
     const fetchAll = (
         apiCall: () => Promise<(T | undefined)[]>,
         {
@@ -221,6 +284,9 @@ export const useStructureRestApi = <
             .finally(() => loading && stopLoading(loadingKey));
     };
 
+    /**
+     * Fetch by parent relationship
+     */
     const fetchByParent = (
         apiCall: () => Promise<(T | undefined)[]>,
         parentId: P,
@@ -259,6 +325,9 @@ export const useStructureRestApi = <
             .finally(() => loading && stopLoading(loadingKey));
     };
 
+    /**
+     * Fetch a single target item
+     */
     const fetchTarget = (
         apiCall: () => Promise<T | undefined>,
         id?: K,
@@ -287,6 +356,9 @@ export const useStructureRestApi = <
             .finally(() => loading && stopLoading(loadingKey));
     };
 
+    /**
+     * Fetch multiple target items with per-id TTL checks
+     */
     const fetchMultiple = (
         apiCall: () => Promise<(T | undefined)[]>,
         ids?: K[],
@@ -325,24 +397,39 @@ export const useStructureRestApi = <
             .finally(() => loading && stopLoading(loadingKey));
     };
 
+    /**
+     * Create a stable key from filters object
+     */
     const searchKeyGen = (object: object = {}) =>
         JSON.stringify(object, Object.keys(object).toSorted());
 
+    /**
+     * Get cached search page by key/page/pageSize
+     */
     const searchGet = (key: string | object, page = 1, pageSize = 10) => {
         const searchKey = typeof key === 'string' ? key : searchKeyGen(key);
         return getRecords(searchCachedRef.current[searchKey + ':' + pageSize]?.[page]);
     };
 
+    /**
+     * Get server-reported total for a cached search key
+     */
     const searchGetTotal = (key: string | object, pageSize = 10): number | undefined => {
         const searchKey = typeof key === 'string' ? key : searchKeyGen(key);
         return searchTotals[searchKey + ':' + pageSize];
     };
 
+    /**
+     * Manually set total for a cached search key
+     */
     const searchSetTotal = (key: string | object, total: number, pageSize = 10): void => {
         const searchKey = typeof key === 'string' ? key : searchKeyGen(key);
         setSearchTotals((previous) => ({ ...previous, [searchKey + ':' + pageSize]: total }));
     };
 
+    /**
+     * Remove expired/old search entries and prune stale cache keys
+     */
     const searchCleanup = () => {
         const MAX_SEARCHES = 50;
         const lastUpdate = lastUpdateRef.current;
@@ -368,6 +455,9 @@ export const useStructureRestApi = <
         // Keep manually set totals even when no cached page ids are present.
     };
 
+    /**
+     * Fetch items as a search query with page-aware caching
+     */
     const fetchSearch = <F = object>(
         apiCall: () => Promise<SearchApiResult<T>>,
         filters: F = {} as F,
@@ -430,6 +520,9 @@ export const useStructureRestApi = <
             .finally(() => loading && stopLoading(loadingKey));
     };
 
+    /**
+     * fetchSearch with empty filters
+     */
     const fetchPaginate = <F = object>(
         apiCall: () => Promise<SearchApiResult<T>>,
         page = 1,
@@ -437,6 +530,10 @@ export const useStructureRestApi = <
         settings: IFetchSettings = {}
     ) => fetchSearch(apiCall, {} as F, page, pageSize, settings);
 
+    /**
+     * Create target item.
+     * Supports optimistic temporary item via dummyData.
+     */
     const createTarget = (
         apiCall: () => Promise<T | undefined>,
         dummyData?: T,
@@ -462,6 +559,9 @@ export const useStructureRestApi = <
             .finally(() => loading && stopLoading(loadingKey));
     };
 
+    /**
+     * Update target item with optimistic local merge + rollback on error
+     */
     const updateTarget = <F = T>(
         apiCall: () => Promise<F | (T | undefined)[]>,
         itemData: Partial<T>,
@@ -494,6 +594,9 @@ export const useStructureRestApi = <
             .finally(() => loading && stopLoading(loadingKey));
     };
 
+    /**
+     * Delete target item with rollback on error
+     */
     const deleteTarget = <F = unknown>(
         apiCall: () => Promise<F>,
         id: K,

@@ -1,6 +1,13 @@
 import { useMemo, useState } from 'react';
 import { type ZodType } from 'zod';
 
+/**
+ * Form management hook.
+ * Handles stateful form data, optional Zod schema validation and submit flow.
+ *
+ * @param initialData - Initial values for form fields
+ * @param schema      - Optional Zod schema used for validation
+ */
 export const useStructureFormValidation = <
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     T extends Record<string, any> = Record<string, any>
@@ -8,26 +15,59 @@ export const useStructureFormValidation = <
     initialData: T = {} as T,
     schema?: ZodType<T>
 ) => {
+    /**
+     * Form data
+     */
     const [form, setFormState] = useState<T>({ ...initialData } as T);
+    /**
+     * Per-field validation errors.
+     * Each key maps to an array of error messages for that field.
+     */
     const [formErrors, setFormErrors] = useState<Partial<Record<keyof T, string[]>>>({});
+    /**
+     * Whether a submission is currently running
+     */
     const [isSubmitting, setIsSubmitting] = useState(false);
 
+    /**
+     * True when there are no validation errors
+     */
     const isValid = useMemo(() => Object.keys(formErrors).length === 0, [formErrors]);
+    /**
+     * True when form data differs from the initial values
+     */
     const isDirty = useMemo(() => JSON.stringify(form) !== JSON.stringify(initialData), [form, initialData]);
 
+    /**
+     * Merge partial data into the form
+     *
+     * @param data
+     */
     const setForm = (data: Partial<T>) => {
         setFormState((previous) => ({ ...previous, ...data } as T));
     };
 
+    /**
+     * Reset form to initial values and clear all errors
+     */
     const resetForm = () => {
         setFormState({ ...initialData } as T);
         setFormErrors({});
     };
 
+    /**
+     * Clear all validation errors
+     */
     const clearErrors = () => {
         setFormErrors({});
     };
 
+    /**
+     * Set validation error(s) for a specific field
+     *
+     * @param field
+     * @param errors - a single message or an array of messages
+     */
     const setFieldError = (field: keyof T, errors: string | string[]) => {
         setFormErrors((previous) => ({
             ...previous,
@@ -35,6 +75,11 @@ export const useStructureFormValidation = <
         }));
     };
 
+    /**
+     * Remove validation errors for a specific field
+     *
+     * @param field
+     */
     const clearFieldError = (field: keyof T) => {
         setFormErrors((previous) => {
             const { [field]: _removed, ...rest } = previous;
@@ -42,6 +87,11 @@ export const useStructureFormValidation = <
         });
     };
 
+    /**
+     * Validate the current form value against the schema (if provided).
+     *
+     * @returns true when validation passes (or no schema is set), false otherwise
+     */
     const validate = (): boolean => {
         if (!schema) {
             setFormErrors({});
@@ -67,6 +117,13 @@ export const useStructureFormValidation = <
         return false;
     };
 
+    /**
+     * Validate (optionally) and then call the submit handler.
+     *
+     * @param onSubmit       - callback called with current form data
+     * @param withValidation - when true (default) validates first
+     * @returns true on success, false when validation failed
+     */
     const handleSubmit = async (
         onSubmit: (data: T) => Promise<void> | void,
         withValidation = true

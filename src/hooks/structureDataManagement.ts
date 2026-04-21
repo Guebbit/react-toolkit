@@ -9,11 +9,19 @@ export const useStructureDataManagement = <
     // type of parent[parent_identifier], where the current item is in a relation "belongsTo" with an unknown parent data
     P extends string | number | symbol = string | number | symbol
 >(
+    // The identification parameter of the item (READONLY and not exported)
     identifiers: string | string[] = 'id',
+    // Delimiter for multiple identifiers
     delimiter = '|'
 ) => {
+    /**
+     * True identifier, becomes a string if it is an array
+     */
     const identifier = Array.isArray(identifiers) ? identifiers.join(delimiter) : identifiers;
 
+    /**
+     * Dictionary of items
+     */
     const [itemDictionary, setItemDictionary] = useState<Record<K, T>>({} as Record<K, T>);
     const itemDictionaryRef = useRef(itemDictionary);
     itemDictionaryRef.current = itemDictionary;
@@ -21,12 +29,20 @@ export const useStructureDataManagement = <
     const [selectedIdentifier, setSelectedIdentifier] = useState<K | undefined>(undefined);
     const [pageCurrent, setPageCurrent] = useState(1);
     const [pageSize, setPageSize] = useState(10);
+    /**
+     * If the item has a parent, here is stored a "parent hasMany" relation
+     */
     const [parentHasMany, setParentHasMany] = useState<Record<P, (typeof identifier)[]>>(
         {} as Record<P, (typeof identifier)[]>
     );
     const parentHasManyRef = useRef(parentHasMany);
     parentHasManyRef.current = parentHasMany;
 
+    /**
+     *
+     * @param itemData
+     * @param customIdentifiers - if specified, uses these identifiers instead of default ones
+     */
     const createIdentifier = useCallback(
         <C = T>(itemData: C, customIdentifiers?: string | string[]): K => {
             const _identifiers = customIdentifiers ?? identifiers;
@@ -37,17 +53,33 @@ export const useStructureDataManagement = <
         [delimiter, identifier, identifiers]
     );
 
+    /**
+     * List of items
+     */
     const itemList = useMemo<T[]>(() => Object.values(itemDictionary as Record<K, T>), [itemDictionary]);
 
+    /**
+     * Set records directly to the dictionary
+     *
+     * @param items
+     */
     const setRecords = useCallback((items: Record<K, T>): Record<K, T> => {
         setItemDictionary(items);
         return items;
     }, []);
 
+    /**
+     * Empty the items dictionary
+     */
     const resetRecords = useCallback(() => {
         setItemDictionary({} as Record<K, T>);
     }, []);
 
+    /**
+     * Get record from object dictionary using identifier
+     *
+     * @param _arguments
+     */
     const getRecord = useCallback(
         (..._arguments: (K | undefined)[]): T | undefined => {
             const id = _arguments.join(delimiter);
@@ -56,6 +88,11 @@ export const useStructureDataManagement = <
         [delimiter]
     );
 
+    /**
+     * Multiple getRecord
+     *
+     * @param idsArray
+     */
     const getRecords = useCallback(
         (idsArray: (K | (K | undefined)[])[] = []) =>
             idsArray
@@ -73,6 +110,11 @@ export const useStructureDataManagement = <
         [createIdentifier]
     );
 
+    /**
+     * Add a list of items to the dictionary.
+     *
+     * @param itemsArray
+     */
     const addRecords = useCallback(
         (itemsArray: (T | undefined)[]) => {
             setItemDictionary((previous) => {
@@ -88,6 +130,14 @@ export const useStructureDataManagement = <
         [createIdentifier]
     );
 
+    /**
+     * Edit item.
+     * If item is not present, it can be ignored depending on `create`.
+     *
+     * @param data
+     * @param id - WARNING: needs createIdentifier format when identifiers is array
+     * @param create - if true item can be created if not present
+     */
     const editRecord = useCallback(
         (data: Partial<T> = {}, id?: K | K[], create = true) => {
             const _inferredId = id ?? (data[identifier as keyof T] as K | K[]);
@@ -110,6 +160,11 @@ export const useStructureDataManagement = <
         [delimiter, identifier]
     );
 
+    /**
+     * Same as addRecords but with edit/merge behavior
+     *
+     * @param itemsArray
+     */
     const editRecords = useCallback(
         (itemsArray: (T | undefined)[]) => {
             setItemDictionary((previous) => {
@@ -129,6 +184,11 @@ export const useStructureDataManagement = <
         [delimiter, identifier]
     );
 
+    /**
+     * Delete record
+     *
+     * @param id
+     */
     const deleteRecord = useCallback((id: K) => {
         setItemDictionary((previous) => {
             if (!(id in previous)) return previous;
@@ -138,17 +198,37 @@ export const useStructureDataManagement = <
         return true;
     }, []);
 
+    /**
+     * Selected item (by selectedIdentifier)
+     */
     const selectedRecord = useMemo<T | undefined>(
         () => (selectedIdentifier === undefined ? undefined : getRecord(selectedIdentifier)),
         [getRecord, selectedIdentifier, itemDictionary]
     );
 
+    /**
+     * ---------------------------------- OFFLINE PAGINATION ------------------------------------
+     */
+
+    /**
+     * How many pages exist
+     */
     const pageTotal = useMemo(() => Math.ceil(itemList.length / pageSize), [itemList.length, pageSize]);
+    /**
+     * First item of current page
+     */
     const pageOffset = useMemo(() => pageSize * (pageCurrent - 1), [pageCurrent, pageSize]);
+    /**
+     * Items shown in current page
+     */
     const pageItemList = useMemo(
         () => itemList.slice(pageOffset, pageOffset + pageSize),
         [itemList, pageOffset, pageSize]
     );
+
+    /**
+     * ----------------------------- hasMany & belongsTo relationships -----------------------------
+     */
 
     const addToParent = useCallback((parentId: P, childId: typeof identifier) => {
         setParentHasMany((previous) => {
@@ -174,6 +254,11 @@ export const useStructureDataManagement = <
         }));
     }, []);
 
+    /**
+     * Get all records by parent and return complete dictionary
+     *
+     * @param parentId
+     */
     const getRecordsByParent = useCallback(
         (parentId?: P): Record<K, T> => {
             const result = {} as Record<K, T>;
@@ -187,6 +272,11 @@ export const useStructureDataManagement = <
         [getRecord]
     );
 
+    /**
+     * Same as above but with array result
+     *
+     * @param parentId
+     */
     const getListByParent = useCallback(
         (parentId?: P): T[] => Object.values(getRecordsByParent(parentId)),
         [getRecordsByParent]
