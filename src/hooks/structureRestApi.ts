@@ -101,6 +101,7 @@ export interface IStructureRestApi {
 
 const isSafeObjectKey = (key: number | string) =>
     key !== '__proto__' && key !== 'constructor' && key !== 'prototype';
+const createSafeDictionary = <V>() => Object.create(null) as Record<string, V>;
 
 export const useStructureRestApi = <
     // type of item
@@ -173,10 +174,10 @@ export const useStructureRestApi = <
      */
     const lastUpdate = {
         [ELastUpdateKeywords.ALL]: 0,
-        [ELastUpdateKeywords.TARGET]: {} as Record<K, number>,
-        [ELastUpdateKeywords.PARENT]: {} as Record<P, number>,
-        [ELastUpdateKeywords.ONLINE]: {} as Record<string, number>,
-        [ELastUpdateKeywords.GENERIC]: {} as Record<string, number>
+        [ELastUpdateKeywords.TARGET]: createSafeDictionary<number>() as Record<K, number>,
+        [ELastUpdateKeywords.PARENT]: createSafeDictionary<number>() as Record<P, number>,
+        [ELastUpdateKeywords.ONLINE]: createSafeDictionary<number>(),
+        [ELastUpdateKeywords.GENERIC]: createSafeDictionary<number>()
     };
 
     /**
@@ -188,13 +189,19 @@ export const useStructureRestApi = <
             lastUpdate[branch] = 0;
         } else if (branch) {
             // @ts-expect-error would be a pain to fully type and it's not needed
-            lastUpdate[branch] = {};
+            lastUpdate[branch] = createSafeDictionary<number>();
         } else {
             lastUpdate[ELastUpdateKeywords.ALL] = 0;
-            lastUpdate[ELastUpdateKeywords.TARGET] = {} as Record<K, number>;
-            lastUpdate[ELastUpdateKeywords.PARENT] = {} as Record<P, number>;
-            lastUpdate[ELastUpdateKeywords.ONLINE] = {} as Record<string, number>;
-            lastUpdate[ELastUpdateKeywords.GENERIC] = {} as Record<string, number>;
+            lastUpdate[ELastUpdateKeywords.TARGET] = createSafeDictionary<number>() as Record<
+                K,
+                number
+            >;
+            lastUpdate[ELastUpdateKeywords.PARENT] = createSafeDictionary<number>() as Record<
+                P,
+                number
+            >;
+            lastUpdate[ELastUpdateKeywords.ONLINE] = createSafeDictionary<number>();
+            lastUpdate[ELastUpdateKeywords.GENERIC] = createSafeDictionary<number>();
         }
     };
 
@@ -557,13 +564,13 @@ export const useStructureRestApi = <
      * Cached items ID divided per page, itemDictionary will hold the item data.
      * Stringified query => page => array if ids of the found products
      */
-    const searchCached = ref<ISearchCache<K>>({});
+    const searchCached = ref<ISearchCache<K>>(createSafeDictionary());
 
     /**
      * Server-reported total count of matching items, keyed by cacheKey (same key as searchCached).
      * A value is only present when the apiCall returned the enriched { items, total } shape.
      */
-    const searchTotals = ref<Record<string, number>>({});
+    const searchTotals = ref<Record<string, number>>(createSafeDictionary());
 
     /**
      * Create a stable and always-the-same key from an object
