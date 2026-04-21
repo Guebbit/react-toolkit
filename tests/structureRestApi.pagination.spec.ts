@@ -13,6 +13,7 @@
  * All API calls use local in-memory mock functions — no network access needed.
  */
 
+import { act, renderHook } from '@testing-library/react';
 import { useStructureRestApi } from '../src/hooks/structureRestApi';
 
 interface IProduct {
@@ -25,7 +26,50 @@ interface IProduct {
 // ---------------------------------------------------------------------------
 
 function makeComposable(TTL = 3_600_000) {
-    return useStructureRestApi<IProduct, number>({ identifiers: 'id', TTL });
+    const rendered = renderHook(() => useStructureRestApi<IProduct, number>({ identifiers: 'id', TTL }));
+    const current = () => rendered.result.current;
+    const valueRef = <T>(getter: () => T, setter?: (value: T) => void) =>
+        Object.defineProperty({}, 'value', {
+            get: getter,
+            set: (value: T) => setter?.(value),
+            enumerable: true
+        }) as { value: T };
+
+    return {
+        fetchAll: async (...args: any[]) => {
+            let result: any;
+            await act(async () => {
+                result = await (current() as any).fetchAll(...args);
+            });
+            return result;
+        },
+        fetchPaginate: async (...args: any[]) => {
+            let result: any;
+            await act(async () => {
+                result = await (current() as any).fetchPaginate(...args);
+            });
+            return result;
+        },
+        fetchByParent: async (...args: any[]) => {
+            let result: any;
+            await act(async () => {
+                result = await (current() as any).fetchByParent(...args);
+            });
+            return result;
+        },
+        getRecord: (...args: any[]) => (current() as any).getRecord(...args),
+        getListByParent: (...args: any[]) => (current() as any).getListByParent(...args),
+        searchGet: (...args: any[]) => (current() as any).searchGet(...args),
+        searchGetTotal: (...args: any[]) => (current() as any).searchGetTotal(...args),
+        itemList: valueRef(() => current().itemList),
+        pageCurrent: valueRef(() => current().pageCurrent, (value) =>
+            act(() => current().setPageCurrent(value))
+        ),
+        pageSize: valueRef(() => current().pageSize, (value) => act(() => current().setPageSize(value))),
+        pageTotal: valueRef(() => current().pageTotal),
+        pageOffset: valueRef(() => current().pageOffset),
+        pageItemList: valueRef(() => current().pageItemList)
+    };
 }
 
 /** Minimal API stub: resolves with the provided data. */

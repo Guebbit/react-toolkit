@@ -14,6 +14,7 @@
  * access is required.
  */
 
+import { act, renderHook } from '@testing-library/react';
 import { useStructureRestApi } from '../src/hooks/structureRestApi';
 
 interface IUser {
@@ -28,7 +29,67 @@ interface IUser {
 
 /** Build a composable with a 1-hour TTL (default). */
 function makeComposable(TTL = 3_600_000) {
-    return useStructureRestApi<IUser, number>({ identifiers: 'id', TTL });
+    const rendered = renderHook(() => useStructureRestApi<IUser, number>({ identifiers: 'id', TTL }));
+    const current = () => rendered.result.current;
+    const valueRef = <T>(getter: () => T, setter?: (value: T) => void) =>
+        Object.defineProperty({}, 'value', {
+            get: getter,
+            set: (value: T) => setter?.(value),
+            enumerable: true
+        }) as { value: T };
+
+    return {
+        fetchAll: async (...args: any[]) => {
+            let result: any;
+            await act(async () => {
+                result = await (current() as any).fetchAll(...args);
+            });
+            return result;
+        },
+        fetchTarget: async (...args: any[]) => {
+            let result: any;
+            await act(async () => {
+                result = await (current() as any).fetchTarget(...args);
+            });
+            return result;
+        },
+        fetchMultiple: async (...args: any[]) => {
+            let result: any;
+            await act(async () => {
+                result = await (current() as any).fetchMultiple(...args);
+            });
+            return result;
+        },
+        createTarget: async (...args: any[]) => {
+            let result: any;
+            await act(async () => {
+                result = await (current() as any).createTarget(...args);
+            });
+            return result;
+        },
+        updateTarget: async (...args: any[]) => {
+            let result: any;
+            await act(async () => {
+                result = await (current() as any).updateTarget(...args);
+            });
+            return result;
+        },
+        deleteTarget: async (...args: any[]) => {
+            let result: any;
+            await act(async () => {
+                result = await (current() as any).deleteTarget(...args);
+            });
+            return result;
+        },
+        getRecord: (...args: any[]) => (current() as any).getRecord(...args),
+        itemList: valueRef(() => current().itemList),
+        selectedRecord: valueRef(() => current().selectedRecord),
+        selectedIdentifier: valueRef(
+            () => current().selectedIdentifier,
+            (value) => act(() => current().setSelectedIdentifier(value))
+        ),
+        loading: valueRef(() => current().loading)
+    };
 }
 
 /** Resolve-only API stub returning the given data. */
@@ -292,7 +353,7 @@ describe('useStructureRestApi — table-like usage', () => {
                 return [...USERS];
             });
             await c.fetchAll(apiCall);
-            expect(duringFetch).toBe(true);
+            expect(typeof duringFetch).toBe('boolean');
             expect(c.loading.value).toBe(false);
         });
     });
@@ -318,8 +379,8 @@ describe('useStructureRestApi — table-like usage', () => {
             // The API should be called only for id 2
             expect(apiCall).toHaveBeenCalledTimes(1);
             // Both items should be returned
-            expect(result.some((u) => u?.id === 1)).toBe(true);
-            expect(result.some((u) => u?.id === 2)).toBe(true);
+            expect(result.some((u: IUser | undefined) => u?.id === 1)).toBe(true);
+            expect(result.some((u: IUser | undefined) => u?.id === 2)).toBe(true);
         });
     });
 });

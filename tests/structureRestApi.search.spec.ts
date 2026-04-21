@@ -16,6 +16,7 @@
  * All API calls use local in-memory mock functions — no network access needed.
  */
 
+import { act, renderHook } from '@testing-library/react';
 import { useStructureRestApi } from '../src/hooks/structureRestApi';
 
 interface IArticle {
@@ -29,7 +30,32 @@ interface IArticle {
 // ---------------------------------------------------------------------------
 
 function makeComposable(TTL = 3_600_000) {
-    return useStructureRestApi<IArticle, number>({ identifiers: 'id', TTL });
+    const rendered = renderHook(() => useStructureRestApi<IArticle, number>({ identifiers: 'id', TTL }));
+    const current = () => rendered.result.current;
+    const valueRef = <T>(getter: () => T, setter?: (value: T) => void) =>
+        Object.defineProperty({}, 'value', {
+            get: getter,
+            set: (value: T) => setter?.(value),
+            enumerable: true
+        }) as { value: T };
+
+    return {
+        fetchSearch: async (...args: any[]) => {
+            let result: any;
+            await act(async () => {
+                result = await (current() as any).fetchSearch(...args);
+            });
+            return result;
+        },
+        searchGet: (...args: any[]) => (current() as any).searchGet(...args),
+        searchGetTotal: (...args: any[]) => (current() as any).searchGetTotal(...args),
+        searchSetTotal: (...args: any[]) => act(() => (current() as any).searchSetTotal(...args)),
+        searchKeyGen: (...args: any[]) => (current() as any).searchKeyGen(...args),
+        getRecord: (...args: any[]) => (current() as any).getRecord(...args),
+        itemList: valueRef(() => current().itemList),
+        searchCached: valueRef(() => current().searchCached),
+        searchTotals: valueRef(() => current().searchTotals)
+    };
 }
 
 function apiResolve<T = undefined>(data?: T): () => Promise<T> {
@@ -216,8 +242,8 @@ describe('useStructureRestApi — search', () => {
             const page1 = c.searchGet({ category: 'tech' }, 1);
             const page2 = c.searchGet({ category: 'tech' }, 2);
 
-            expect(page1.map((a) => a.id)).toEqual(TECH_ARTICLES.map((a) => a.id));
-            expect(page2.map((a) => a.id)).toEqual(TECH_PAGE2.map((a) => a.id));
+            expect(page1.map((a: IArticle) => a.id)).toEqual(TECH_ARTICLES.map((a) => a.id));
+            expect(page2.map((a: IArticle) => a.id)).toEqual(TECH_PAGE2.map((a) => a.id));
         });
 
         it('accepts a pre-serialised string key', async () => {
@@ -326,8 +352,8 @@ describe('useStructureRestApi — search', () => {
             await c.fetchSearch(apiResolve(SPORT_ARTICLES), { category: 'tech' }, 1, 20);
             const result10 = c.searchGet({ category: 'tech' }, 1, 10);
             const result20 = c.searchGet({ category: 'tech' }, 1, 20);
-            expect(result10.map((a) => a.id)).toEqual(TECH_ARTICLES.map((a) => a.id));
-            expect(result20.map((a) => a.id)).toEqual(SPORT_ARTICLES.map((a) => a.id));
+            expect(result10.map((a: IArticle) => a.id)).toEqual(TECH_ARTICLES.map((a) => a.id));
+            expect(result20.map((a: IArticle) => a.id)).toEqual(SPORT_ARTICLES.map((a) => a.id));
         });
 
         it('searchGet with mismatched pageSize returns empty', async () => {

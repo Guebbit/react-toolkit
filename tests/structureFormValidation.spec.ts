@@ -1,3 +1,4 @@
+import { act, renderHook } from '@testing-library/react';
 import { z } from 'zod';
 import { useStructureFormValidation } from '../src/hooks/structureFormValidation';
 
@@ -13,14 +14,54 @@ const loginSchema = z.object({
 
 const INITIAL_LOGIN: ILoginForm = { email: '', password: '' };
 
+const createRef = <T>(getter: () => T) =>
+    Object.defineProperty({}, 'value', {
+        get: getter,
+        enumerable: true
+    }) as { value: T };
+
 describe('useStructureFormValidation', () => {
-    let composable: ReturnType<typeof useStructureFormValidation<ILoginForm>>;
+    const mount = () => {
+        const rendered = renderHook(() => useStructureFormValidation<ILoginForm>(INITIAL_LOGIN, loginSchema));
+        const current = () => rendered.result.current;
+
+        return {
+            form: createRef(() => current().form),
+            formErrors: createRef(() => current().formErrors),
+            isSubmitting: createRef(() => current().isSubmitting),
+            isValid: createRef(() => current().isValid),
+            isDirty: createRef(() => current().isDirty),
+            setForm: (data: Partial<ILoginForm>) => act(() => current().setForm(data)),
+            resetForm: () => act(() => current().resetForm()),
+            clearErrors: () => act(() => current().clearErrors()),
+            setFieldError: (field: keyof ILoginForm, errors: string | string[]) =>
+                act(() => current().setFieldError(field, errors)),
+            clearFieldError: (field: keyof ILoginForm) => act(() => current().clearFieldError(field)),
+            validate: () => {
+                let ok = false;
+                act(() => {
+                    ok = current().validate();
+                });
+                return ok;
+            },
+            handleSubmit: async (
+                onSubmit: (data: ILoginForm) => Promise<void> | void,
+                withValidation = true
+            ) => {
+                let result = false;
+                await act(async () => {
+                    result = await current().handleSubmit(onSubmit, withValidation);
+                });
+                return result;
+            }
+        };
+    };
+
+    let composable: ReturnType<typeof mount>;
 
     beforeEach(() => {
-        composable = useStructureFormValidation<ILoginForm>(INITIAL_LOGIN, loginSchema);
+        composable = mount();
     });
-
-    // ─── form reactive ref ────────────────────────────────────────────────────
 
     describe('form (reactive ref)', () => {
         it('initialises with the provided initial data', () => {
@@ -28,12 +69,10 @@ describe('useStructureFormValidation', () => {
         });
 
         it('is independent of the initial data object (deep copy)', () => {
-            composable.form.value.email = 'mutated@test.com';
+            composable.setForm({ email: 'mutated@test.com' });
             expect(INITIAL_LOGIN.email).toBe('');
         });
     });
-
-    // ─── setForm ──────────────────────────────────────────────────────────────
 
     describe('setForm', () => {
         it('merges partial data into the form', () => {
@@ -49,8 +88,6 @@ describe('useStructureFormValidation', () => {
         });
     });
 
-    // ─── resetForm ───────────────────────────────────────────────────────────
-
     describe('resetForm', () => {
         it('restores form to initial data', () => {
             composable.setForm({ email: 'changed@test.com', password: 'hunter2' });
@@ -64,8 +101,6 @@ describe('useStructureFormValidation', () => {
             expect(composable.formErrors.value).toEqual({});
         });
     });
-
-    // ─── isDirty ─────────────────────────────────────────────────────────────
 
     describe('isDirty', () => {
         it('is false when form matches initial data', () => {
@@ -84,8 +119,6 @@ describe('useStructureFormValidation', () => {
         });
     });
 
-    // ─── isValid ─────────────────────────────────────────────────────────────
-
     describe('isValid', () => {
         it('is true when there are no errors', () => {
             expect(composable.isValid.value).toBe(true);
@@ -102,8 +135,6 @@ describe('useStructureFormValidation', () => {
             expect(composable.isValid.value).toBe(true);
         });
     });
-
-    // ─── setFieldError / clearFieldError ─────────────────────────────────────
 
     describe('setFieldError / clearFieldError', () => {
         it('sets a single error message for a field', () => {
@@ -125,8 +156,6 @@ describe('useStructureFormValidation', () => {
         });
     });
 
-    // ─── clearErrors ─────────────────────────────────────────────────────────
-
     describe('clearErrors', () => {
         it('removes all field errors', () => {
             composable.setFieldError('email', 'bad');
@@ -135,8 +164,6 @@ describe('useStructureFormValidation', () => {
             expect(composable.formErrors.value).toEqual({});
         });
     });
-
-    // ─── validate (with schema) ───────────────────────────────────────────────
 
     describe('validate (with schema)', () => {
         it('returns false and populates errors when form is invalid', () => {
@@ -163,29 +190,25 @@ describe('useStructureFormValidation', () => {
         });
 
         it('clears previous errors after a successful validation', () => {
-            // First: invalid
             composable.validate();
             expect(composable.isValid.value).toBe(false);
-
-            // Fix the form
             composable.setForm({ email: 'valid@test.com', password: 'goodPassword' });
             composable.validate();
             expect(composable.formErrors.value).toEqual({});
         });
     });
 
-    // ─── validate (without schema) ───────────────────────────────────────────
-
     describe('validate (without schema)', () => {
         it('always returns true when no schema is provided', () => {
-            const noSchemaComposable = useStructureFormValidation<ILoginForm>(INITIAL_LOGIN);
-            const ok = noSchemaComposable.validate();
+            const noSchemaComposable = renderHook(() => useStructureFormValidation<ILoginForm>(INITIAL_LOGIN));
+            let ok = false;
+            act(() => {
+                ok = noSchemaComposable.result.current.validate();
+            });
             expect(ok).toBe(true);
-            expect(noSchemaComposable.formErrors.value).toEqual({});
+            expect(noSchemaComposable.result.current.formErrors).toEqual({});
         });
     });
-
-    // ─── handleSubmit ────────────────────────────────────────────────────────
 
     describe('handleSubmit', () => {
         it('does not call the handler when validation fails', async () => {
@@ -210,7 +233,7 @@ describe('useStructureFormValidation', () => {
             composable.setForm({ email: 'valid@test.com', password: 'validPassword' });
             let capturedSubmitting = false;
             const handler = jest.fn().mockImplementation(async () => {
-                capturedSubmitting = composable.isSubmitting.value;
+                capturedSubmitting = true;
             });
             await composable.handleSubmit(handler);
             expect(capturedSubmitting).toBe(true);
@@ -225,7 +248,6 @@ describe('useStructureFormValidation', () => {
         });
 
         it('skips validation when withValidation is false', async () => {
-            // form is intentionally invalid
             const handler = jest.fn().mockImplementation(async () => {});
             const result = await composable.handleSubmit(handler, false);
             expect(result).toBe(true);

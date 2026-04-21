@@ -1,3 +1,4 @@
+import { act, renderHook } from '@testing-library/react';
 import { useStructureDataManagement } from '../src/hooks/structureDataManagement';
 
 interface ITestItem {
@@ -5,11 +6,54 @@ interface ITestItem {
     name: string;
 }
 
+type Composable = ReturnType<typeof useStructureDataManagement<ITestItem>>;
+
+const createRef = <T>(getter: () => T, setter?: (value: T) => void) =>
+    Object.defineProperty({}, 'value', {
+        get: getter,
+        set: (value: T) => {
+            if (!setter) return;
+            act(() => setter(value));
+        },
+        enumerable: true
+    }) as { value: T };
+
+const makeComposable = () => {
+    const rendered = renderHook(() => useStructureDataManagement<ITestItem>('id'));
+    const current = () => rendered.result.current;
+
+    return {
+        getRecord: (...args: Parameters<Composable['getRecord']>) => current().getRecord(...args),
+        addRecord: (item: ITestItem) => act(() => current().addRecord(item)),
+        addRecords: (items: (ITestItem | undefined)[]) => act(() => current().addRecords(items)),
+        editRecord: (...args: Parameters<Composable['editRecord']>) =>
+            act(() => current().editRecord(...args)),
+        editRecords: (items: (ITestItem | undefined)[]) => act(() => current().editRecords(items)),
+        deleteRecord: (id: never) => act(() => current().deleteRecord(id)),
+        setRecords: (items: never) => act(() => current().setRecords(items)),
+        resetRecords: () => act(() => current().resetRecords()),
+        addToParent: (parentId: never, childId: never) => act(() => current().addToParent(parentId, childId)),
+        removeFromParent: (parentId: never, childId: never) =>
+            act(() => current().removeFromParent(parentId, childId)),
+        getListByParent: (parentId: never) => current().getListByParent(parentId),
+        itemList: createRef(() => current().itemList),
+        selectedIdentifier: createRef(
+            () => current().selectedIdentifier,
+            (value) => current().setSelectedIdentifier(value)
+        ),
+        selectedRecord: createRef(() => current().selectedRecord),
+        pageCurrent: createRef(() => current().pageCurrent, (value) => current().setPageCurrent(value)),
+        pageSize: createRef(() => current().pageSize, (value) => current().setPageSize(value)),
+        pageTotal: createRef(() => current().pageTotal),
+        pageItemList: createRef(() => current().pageItemList)
+    };
+};
+
 describe('useStructureDataManagement', () => {
-    let composable: ReturnType<typeof useStructureDataManagement<ITestItem>>;
+    let composable: ReturnType<typeof makeComposable>;
 
     beforeEach(() => {
-        composable = useStructureDataManagement<ITestItem>('id');
+        composable = makeComposable();
     });
 
     describe('addRecord / getRecord', () => {
