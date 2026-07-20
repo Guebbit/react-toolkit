@@ -1,0 +1,177 @@
+name: CI
+
+on:
+    # Run on every PR and on direct pushes to main.
+    # This gives fast feedback for feature branches and protects main.
+    pull_request:
+    push:
+        branches:
+            - main
+
+concurrency:
+    # Cancel stale runs for the same branch/PR when newer commits arrive.
+    group: ci-${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
+
+env:
+    NODE_VERSION: 22
+
+jobs:
+    commitlint:
+        # Lint pushed commit messages against the conventional-commit rules in .commitlintrc.cjs.
+        # Only meaningful on push (needs the before/after SHAs from the push event).
+        if: github.event_name == 'push'
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        permissions:
+            contents: read
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+              with:
+                  # Need full history to walk the pushed commit range.
+                  fetch-depth: 0
+
+            - name: Setup Node
+              uses: actions/setup-node@v4
+              with:
+                  node-version: ${{ env.NODE_VERSION }}
+                  cache: npm
+                  cache-dependency-path: package-lock.json
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Lint commit messages
+              run: npx commitlint --from ${{ github.event.before }} --to ${{ github.event.after }} --verbose
+
+    lint:
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        permissions:
+            contents: read
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Setup Node
+              uses: actions/setup-node@v4
+              with:
+                  node-version: ${{ env.NODE_VERSION }}
+                  cache: npm
+                  cache-dependency-path: package-lock.json
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Lint
+              run: npm run lint
+
+    prettier:
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        permissions:
+            contents: read
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Setup Node
+              uses: actions/setup-node@v4
+              with:
+                  node-version: ${{ env.NODE_VERSION }}
+                  cache: npm
+                  cache-dependency-path: package-lock.json
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Check formatting
+              run: npm run prettier
+
+    build:
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+        permissions:
+            contents: read
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Setup Node
+              uses: actions/setup-node@v4
+              with:
+                  node-version: ${{ env.NODE_VERSION }}
+                  cache: npm
+                  cache-dependency-path: package-lock.json
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Build (also type-checks)
+              run: npm run build
+
+    test:
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+        permissions:
+            contents: read
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Setup Node
+              uses: actions/setup-node@v4
+              with:
+                  node-version: ${{ env.NODE_VERSION }}
+                  cache: npm
+                  cache-dependency-path: package-lock.json
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Run tests
+              run: npm run test
+
+    docs:
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        permissions:
+            contents: read
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Setup Node
+              uses: actions/setup-node@v4
+              with:
+                  node-version: ${{ env.NODE_VERSION }}
+                  cache: npm
+                  cache-dependency-path: package-lock.json
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Build docs
+              run: npm run docs:build
+
+    ci:
+        # Single status check to require in branch protection, so adding/renaming
+        # jobs above doesn't require updating the required-checks list every time.
+        if: always()
+        needs:
+            - commitlint
+            - lint
+            - prettier
+            - build
+            - test
+            - docs
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        steps:
+            - name: Check all jobs succeeded
+              run: |
+                  if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+                      echo "One or more required jobs failed."
+                      exit 1
+                  fi

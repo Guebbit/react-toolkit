@@ -1,18 +1,23 @@
 import { create } from 'zustand';
 
-export interface CoreState {
+interface ICoreState {
+    /**
+     * This loading must be accessed from anywhere.
+     * Components, guards and so on.
+     */
     loadings: Record<string | symbol, boolean>;
-    setLoading: (key?: string, value?: boolean) => boolean;
-    resetLoadings: () => void;
-    getLoading: (key?: string) => boolean;
 }
 
-export const useCoreStore = create<CoreState>()((set, get) => ({
-    /**
-     * This loading state must be accessible from anywhere:
-     * components, guards and so on.
-     */
+interface ICoreActions {
+    setLoading: (key?: string | symbol, value?: boolean) => void;
+    resetLoadings: () => void;
+    getLoading: (key?: string | symbol) => boolean;
+    isLoading: () => boolean;
+}
+
+export const useCoreStore = create<ICoreState & ICoreActions>((set, get) => ({
     loadings: {},
+
     /**
      * Set loading value
      *
@@ -20,20 +25,25 @@ export const useCoreStore = create<CoreState>()((set, get) => ({
      * @param value
      */
     setLoading: (key = '', value = false) => {
-        set((state) => ({ loadings: { ...state.loadings, [key]: value } }));
-        return value;
+        set((state) => ({
+            loadings: { ...state.loadings, [key]: value }
+        }));
     },
+
     /**
      * Reset all loadings
      */
-    resetLoadings: () => set({ loadings: {} }),
+    resetLoadings: () => {
+        set({ loadings: {} });
+    },
+
     /**
      * Check if there is a specific loading
      */
-    getLoading: (key = '') => !!get().loadings[key]
-}));
+    getLoading: (key = '') => !!get().loadings[key],
 
-/**
- * Check if there are any loadings
- */
-export const isCoreLoading = () => Object.values(useCoreStore.getState().loadings).some(Boolean);
+    /**
+     * Check if there are any loadings
+     */
+    isLoading: () => Object.values(get().loadings).some(Boolean)
+}));

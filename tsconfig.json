@@ -1,17 +1,24 @@
 {
-  "compilerOptions": {
-    "target": "ES2023",
-    "module": "ESNext",
-    "moduleResolution": "Node",
-    "strict": true,
-    "skipLibCheck": true,
-    "esModuleInterop": true,
-    "forceConsistentCasingInFileNames": true,
-    "declaration": true,
-    "declarationDir": "dist/types",
-    "outDir": "dist",
-    "types": ["node", "jest"],
-    "lib": ["ES2023"]
-  },
-  "include": ["src", "tests"]
+    "compilerOptions": {
+        "strict": true,
+        // Skip type-checking of dependency .d.ts files (some bundled types reference
+        // vitest or other dev-only packages). Does not affect checking of our own source.
+        "skipLibCheck": true,
+        "target": "ES2023",
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "esModuleInterop": true,
+        "sourceMap": true,
+        "lib": ["dom", "esnext"],
+        "allowSyntheticDefaultImports": true,
+        "isolatedModules": true,
+        "resolveJsonModule": true,
+        "rootDir": "./src",
+        "outDir": "./dist",
+        "declaration": true,
+        "declarationMap": true,
+        "declarationDir": "./dist/types"
+    },
+    "include": ["src"],
+    "exclude": ["node_modules", "dist"]
 }

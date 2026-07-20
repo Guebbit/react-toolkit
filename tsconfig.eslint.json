@@ -1,0 +1,16 @@
+{
+    "extends": "./tsconfig.json",
+    "include": [
+        "src/**/*.ts",
+        "src/**/*.tsx",
+        "tests/**/*.ts",
+        "tests/**/*.tsx",
+        "eslint.config.ts"
+    ],
+    "compilerOptions": {
+        "rootDir": ".",
+        "types": ["jest", "node"],
+        "allowJs": true,
+        "noEmit": true
+    }
+}
