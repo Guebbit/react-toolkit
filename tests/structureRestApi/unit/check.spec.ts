@@ -69,14 +69,14 @@ describe('UNIT · checkByParent', () => {
 describe('UNIT · checkAny', () => {
     it('always false without a lastUpdateKey (fetchAny never caches that call)', async () => {
         const c = make();
-        await c.fetchAny(async () => 'ok');
+        await c.fetchAny(() => Promise.resolve('ok'));
         expect(c.checkAny()).toBe(false);
     });
 
     it('true after fetchAny primed the given lastUpdateKey', async () => {
         const c = make();
         expect(c.checkAny('report-1')).toBe(false);
-        await c.fetchAny(async () => 'ok', { lastUpdateKey: 'report-1' });
+        await c.fetchAny(() => Promise.resolve('ok'), { lastUpdateKey: 'report-1' });
         expect(c.checkAny('report-1')).toBe(true);
     });
 });

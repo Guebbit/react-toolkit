@@ -5,7 +5,6 @@
  * touched. Optional `latency` uses setTimeout (drive it with jest fake timers).
  * Plain module (not a *.spec.ts) so Jest's testMatch ignores it.
  */
-/* eslint-disable @typescript-eslint/no-explicit-any */
 
 export interface IServerOptions {
     /** When > 0, responses resolve after this many ms (needs fake timers to advance). */
@@ -46,13 +45,15 @@ export function createServer<T extends { id: number }>(
     const get = (id: number) => () => {
         calls.get += 1;
         const found = store.get(id);
-        return settle(found ? ({ ...found } as T) : undefined);
+        return settle(found ? { ...found } : undefined);
     };
 
     /** GET /resource/:id (batch) — the items whose id is in `ids`. */
     const many = (ids: number[]) => () => {
         calls.get += 1;
-        return settle(ids.map((id) => store.get(id)).filter(Boolean) as (T | undefined)[]);
+        return settle(
+            ids.map((id) => store.get(id)).filter((item): item is T => item !== undefined)
+        );
     };
 
     /**
@@ -71,18 +72,19 @@ export function createServer<T extends { id: number }>(
     /** POST /resource — create; auto-assigns an id when absent. */
     const create = (data: Partial<T>) => () => {
         calls.create += 1;
-        const id = (data as any).id ?? (autoId += 1);
-        const item = { ...(data as any), id } as T;
+        const id: number = (data as { id?: number }).id ?? (autoId += 1);
+        const item = { ...data, id } as T;
         store.set(id, item);
-        return settle({ ...item } as T);
+        return settle({ ...item });
     };
 
     /** PUT /resource/:id — merge patch into the stored item, echo it back. */
     const update = (id: number, patch: Partial<T>) => () => {
         calls.update += 1;
-        const merged = { ...(store.get(id) as T), ...patch, id } as T;
+        const existing = store.get(id);
+        const merged = { ...existing, ...patch, id } as T;
         store.set(id, merged);
-        return settle({ ...merged } as T);
+        return settle({ ...merged });
     };
 
     /** DELETE /resource/:id — remove and acknowledge. */

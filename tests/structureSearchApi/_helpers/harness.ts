@@ -15,7 +15,11 @@ import type { IStructureRestApi } from '../../../src/hooks/structureRestApi';
 
 export { clearAllInstances, track } from '../../structureRestApi/_helpers/harness';
 
-function callThroughAct(fn: (...args: unknown[]) => unknown, thisArgument: unknown, args: unknown[]): unknown {
+function callThroughAct(
+    fn: (...args: unknown[]) => unknown,
+    thisArgument: unknown,
+    args: unknown[]
+): unknown {
     let returned: unknown;
     // Returning `returned` from the act() callback (rather than starting a
     // second, later act() call once we notice it's a Promise) is what keeps
@@ -42,9 +46,10 @@ function liveHandle<C extends object>(getCurrent: () => C): C {
     return new Proxy({} as C, {
         get(_target, property) {
             const current = getCurrent();
-            const value = Reflect.get(current as object, property);
+            const value: unknown = Reflect.get(current as object, property);
             if (typeof value !== 'function') return value;
-            return (...args: unknown[]) => callThroughAct(value as (...a: unknown[]) => unknown, current, args);
+            return (...args: unknown[]) =>
+                callThroughAct(value as (...a: unknown[]) => unknown, current, args);
         }
     });
 }

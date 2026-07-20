@@ -35,7 +35,7 @@ describe('UNIT · loading', () => {
         let during = false;
         await c.fetchAll(
             jest.fn(() => {
-                during = c.loading as boolean;
+                during = c.loading;
                 return Promise.resolve([...USERS]);
             })
         );

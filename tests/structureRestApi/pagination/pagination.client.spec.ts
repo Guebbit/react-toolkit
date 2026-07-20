@@ -32,7 +32,7 @@ describe('PAGINATION · client-side', () => {
         c.setPageSize(10);
         c.setPageCurrent(1);
         expect(c.pageItemList).toHaveLength(10);
-        expect(c.pageItemList[0]!.id).toBe(1);
+        expect(c.pageItemList[0]?.id).toBe(1);
     });
 
     it('returns the second page items', async () => {

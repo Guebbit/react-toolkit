@@ -1,16 +1,9 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { type ZodType } from 'zod';
-import { useLiveState } from '../utils/useLiveState';
 
 /**
  * Form management custom hook.
  * Handles reactive form state, optional Zod schema validation and submission flow.
- *
- * Every value below is exposed as a GETTER over live state rather than as a
- * plain per-render property, because a form is read back within the tick it is
- * written: a submit handler calls `setForm(...)` and then `validate()`, and
- * reads `isSubmitting` from inside its own `onSubmit`. A per-render snapshot
- * would hand all of those the value from before the write. See {@link useLiveState}.
  *
  * @param initialData - Initial values for the form fields
  * @param schema      - Optional Zod schema used for validation
@@ -27,50 +20,65 @@ export const useStructureFormValidation = <
      * Starts as a copy of initialData, but is mutable via setInitialData so a
      * record fetched after this hook was created can become the new
      * baseline (see setInitialData / activateAutoHydrate).
+     *
+     * The ref holds the canonical live value for synchronous access in callbacks.
+     * The state drives re-renders (so isDirty recomputes after setInitialData).
      */
-    const [initialFormDataRef, setInitialFormData] = useLiveState<T>(() => ({ ...initialData }));
+    const initialFormDataRef = useRef<T>({ ...initialData });
+    const [initialFormData, setInitialFormDataState] = useState<T>(() => ({ ...initialData }));
 
     /**
-     * Reactive form data
+     * Reactive form data.
+     *
+     * The ref holds the live form value for synchronous reads inside callbacks
+     * (e.g. validate() and handleSubmit() read the form the same tick setForm
+     * was called). The state drives re-renders.
      */
-    const [formRef, setFormValue] = useLiveState<T>(() => ({ ...initialData }));
+    const formRef = useRef<T>({ ...initialData });
+    const [form, setFormState] = useState<T>(() => ({ ...initialData }));
 
     /**
      * Per-field validation errors.
      * Each key maps to a list of error messages for that field.
      */
-    const [formErrorsRef, setFormErrors] = useLiveState<Partial<Record<keyof T, string[]>>>({});
+    const [formErrors, setFormErrors] = useState<Partial<Record<keyof T, string[]>>>({});
 
     /**
      * Whether the UI should surface {@link formErrors} yet — typically flipped on
      * after the first submit attempt, so a pristine form isn't shown as invalid.
      */
-    const [showFormErrorsRef, setShowFormErrors] = useLiveState(false);
+    const [showFormErrors, setShowFormErrors] = useState(false);
 
     /**
-     * Whether a submission is currently in progress
+     * Whether a submission is currently in progress.
+     *
+     * The ref allows synchronous reads inside handleSubmit (e.g. reading
+     * isSubmitting from inside the onSubmit callback in the same tick it was
+     * set to true). The state drives re-renders.
      */
-    const [isSubmittingRef, setIsSubmitting] = useLiveState(false);
+    const isSubmittingRef = useRef(false);
+    const [, setIsSubmittingState] = useState(false);
 
     /**
      * Merge partial data into the form
      *
      * @param data
      */
-    const setForm = useCallback(
-        (data: Partial<T>) => {
-            setFormValue({ ...formRef.current, ...data } as T);
-        },
-        [setFormValue, formRef]
-    );
+    const setForm = useCallback((data: Partial<T>) => {
+        const next = { ...formRef.current, ...data } as T;
+        formRef.current = next;
+        setFormState(next);
+    }, []);
 
     /**
      * Reset form to initial values and clear all errors
      */
     const resetForm = useCallback(() => {
-        setFormValue({ ...initialFormDataRef.current });
+        const initial = { ...initialFormDataRef.current };
+        formRef.current = initial;
+        setFormState(initial);
         setFormErrors({});
-    }, [setFormValue, setFormErrors, initialFormDataRef]);
+    }, []);
 
     /**
      * Replace the baseline values that resetForm() restores and isDirty compares
@@ -79,19 +87,18 @@ export const useStructureFormValidation = <
      *
      * @param data
      */
-    const setInitialData = useCallback(
-        (data: T) => {
-            setInitialFormData({ ...data });
-        },
-        [setInitialFormData]
-    );
+    const setInitialData = useCallback((data: T) => {
+        const next = { ...data };
+        initialFormDataRef.current = next;
+        setInitialFormDataState(next);
+    }, []);
 
     /**
      * Clear all validation errors
      */
     const clearErrors = useCallback(() => {
         setFormErrors({});
-    }, [setFormErrors]);
+    }, []);
 
     /**
      * Set validation error(s) for a specific field
@@ -99,28 +106,24 @@ export const useStructureFormValidation = <
      * @param field
      * @param errors - a single message or an array of messages
      */
-    const setFieldError = useCallback(
-        (field: keyof T, errors: string | string[]) => {
-            setFormErrors({
-                ...formErrorsRef.current,
-                [field]: Array.isArray(errors) ? errors : [errors]
-            });
-        },
-        [setFormErrors, formErrorsRef]
-    );
+    const setFieldError = useCallback((field: keyof T, errors: string | string[]) => {
+        setFormErrors((prev) => ({
+            ...prev,
+            [field]: Array.isArray(errors) ? errors : [errors]
+        }));
+    }, []);
 
     /**
      * Remove validation errors for a specific field
      *
      * @param field
      */
-    const clearFieldError = useCallback(
-        (field: keyof T) => {
-            const { [field]: _removed, ...rest } = formErrorsRef.current;
-            setFormErrors(rest as Partial<Record<keyof T, string[]>>);
-        },
-        [setFormErrors, formErrorsRef]
-    );
+    const clearFieldError = useCallback((field: keyof T) => {
+        setFormErrors((prev) => {
+            const { [field]: _removed, ...rest } = prev;
+            return rest as Partial<Record<keyof T, string[]>>;
+        });
+    }, []);
 
     /**
      * Validate the current form value against the schema (if provided).
@@ -151,7 +154,7 @@ export const useStructureFormValidation = <
         setFormErrors(errors);
 
         return false;
-    }, [schema, setFormErrors, formRef]);
+    }, [schema]);
 
     /**
      * Validate (optionally) and then call the provided submit handler.
@@ -168,15 +171,17 @@ export const useStructureFormValidation = <
         ): Promise<boolean> => {
             if (withValidation && !validate()) return false;
 
-            setIsSubmitting(true);
+            isSubmittingRef.current = true;
+            setIsSubmittingState(true);
             try {
                 await onSubmit(formRef.current);
                 return true;
             } finally {
-                setIsSubmitting(false);
+                isSubmittingRef.current = false;
+                setIsSubmittingState(false);
             }
         },
-        [validate, setIsSubmitting, formRef]
+        [validate]
     );
 
     /**
@@ -194,34 +199,33 @@ export const useStructureFormValidation = <
      * @param item - the record to hydrate from, or undefined while it is pending
      */
     const hydratedFromRef = useRef<string | undefined>(undefined);
-    const activateAutoHydrate = useCallback(
-        (item: T | undefined | null) => {
-            if (!item) return;
-            // Compared by value, not identity: a re-fetch that resolves to an
-            // equal record produces a new object every time, and re-hydrating on
-            // that would wipe whatever the user has typed since. JSON is the same
-            // comparison isDirty already uses.
-            const fingerprint = JSON.stringify(item);
-            if (hydratedFromRef.current === fingerprint) return;
-            hydratedFromRef.current = fingerprint;
-            setInitialFormData({ ...item });
-            setFormValue({ ...item });
-            setFormErrors({});
-        },
-        [setInitialFormData, setFormValue, setFormErrors]
-    );
+    const activateAutoHydrate = useCallback((item: T | undefined | null) => {
+        if (!item) return;
+        // Compared by value, not identity: a re-fetch that resolves to an
+        // equal record produces a new object every time, and re-hydrating on
+        // that would wipe whatever the user has typed since. JSON is the same
+        // comparison isDirty already uses.
+        const fingerprint = JSON.stringify(item);
+        if (hydratedFromRef.current === fingerprint) return;
+        hydratedFromRef.current = fingerprint;
+        const next = { ...item };
+        initialFormDataRef.current = next;
+        setInitialFormDataState(next);
+        formRef.current = next;
+        setFormState(next);
+        setFormErrors({});
+    }, []);
 
     return {
-        get form() {
-            return formRef.current;
-        },
-        get formErrors() {
-            return formErrorsRef.current;
-        },
-        get showFormErrors() {
-            return showFormErrorsRef.current;
-        },
+        form,
+        formErrors,
+        showFormErrors,
         setShowFormErrors,
+        /**
+         * isSubmitting is exposed as a getter so it reflects the latest value
+         * synchronously (e.g. reading it inside the onSubmit callback the same
+         * tick it was set to true). The underlying state still drives re-renders.
+         */
         get isSubmitting() {
             return isSubmittingRef.current;
         },
@@ -229,13 +233,13 @@ export const useStructureFormValidation = <
          * True when there are no validation errors
          */
         get isValid() {
-            return Object.keys(formErrorsRef.current).length === 0;
+            return Object.keys(formErrors).length === 0;
         },
         /**
          * True when the form data differs from the initial values
          */
         get isDirty() {
-            return JSON.stringify(formRef.current) !== JSON.stringify(initialFormDataRef.current);
+            return JSON.stringify(form) !== JSON.stringify(initialFormData);
         },
         setForm,
         resetForm,
