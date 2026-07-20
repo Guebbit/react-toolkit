@@ -23,8 +23,9 @@ import { USERS, type IUser } from '../_helpers/fixtures';
 import { useFakeClock, advance, restoreClock } from '../_helpers/time';
 
 const TTL = 1000; // poll interval = max(50, TTL / 2) = 500ms
+const noop = () => {};
 
-const useHarness = (initialId: number | undefined) => {
+const useHarness = (initialId?: number) => {
     const c = track(useStructureRestApi<number, IUser>({ identifiers: 'id', TTL }));
     const idRef = useRef<number | undefined>(initialId);
     return { c, idRef };
@@ -42,7 +43,7 @@ describe('UNIT · watchTarget', () => {
     it('fires immediately for the id present at creation, and selects it eagerly', async () => {
         const apiCall = fakeApiCall();
         const { result } = renderHook(() => useHarness(1));
-        let stop = () => {};
+        let stop: () => void = noop;
 
         act(() => {
             stop = result.current.c.watchTarget(result.current.idRef, apiCall);
@@ -60,8 +61,8 @@ describe('UNIT · watchTarget', () => {
 
     it('is a no-op when the id is nullish at creation', () => {
         const apiCall = fakeApiCall();
-        const { result } = renderHook(() => useHarness(undefined));
-        let stop = () => {};
+        const { result } = renderHook(() => useHarness());
+        let stop: () => void = noop;
 
         act(() => {
             stop = result.current.c.watchTarget(result.current.idRef, apiCall);
@@ -76,7 +77,7 @@ describe('UNIT · watchTarget', () => {
     it('picks up an id change on the next poll tick and refetches', async () => {
         const apiCall = fakeApiCall();
         const { result } = renderHook(() => useHarness(1));
-        let stop = () => {};
+        let stop: () => void = noop;
 
         act(() => {
             stop = result.current.c.watchTarget(result.current.idRef, apiCall);
@@ -102,7 +103,7 @@ describe('UNIT · watchTarget', () => {
     it('re-fetches the same id once it goes stale, via the poll', async () => {
         const apiCall = fakeApiCall();
         const { result } = renderHook(() => useHarness(1));
-        let stop = () => {};
+        let stop: () => void = noop;
 
         act(() => {
             stop = result.current.c.watchTarget(result.current.idRef, apiCall);
@@ -122,7 +123,7 @@ describe('UNIT · watchTarget', () => {
         const onSettled = jest.fn();
         const onError = jest.fn();
         const { result } = renderHook(() => useHarness(1));
-        let stop = () => {};
+        let stop: () => void = noop;
 
         act(() => {
             stop = result.current.c.watchTarget(result.current.idRef, fakeApiCall(), {
@@ -147,7 +148,7 @@ describe('UNIT · watchTarget', () => {
         const onError = jest.fn();
         const onSettled = jest.fn();
         const { result } = renderHook(() => useHarness(1));
-        let stop = () => {};
+        let stop: () => void = noop;
 
         act(() => {
             stop = result.current.c.watchTarget(result.current.idRef, apiCall, {
@@ -170,7 +171,7 @@ describe('UNIT · watchTarget', () => {
     it('stop() cancels the poll', async () => {
         const apiCall = fakeApiCall();
         const { result } = renderHook(() => useHarness(1));
-        let stop = () => {};
+        let stop: () => void = noop;
 
         act(() => {
             stop = result.current.c.watchTarget(result.current.idRef, apiCall);

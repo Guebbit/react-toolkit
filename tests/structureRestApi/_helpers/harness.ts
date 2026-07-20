@@ -8,10 +8,7 @@
 
 import { QueryClient } from '@tanstack/query-core';
 import { act, renderHook } from '@testing-library/react';
-import {
-    useStructureRestApi,
-    type IStructureRestApi
-} from '../../../src/hooks/structureRestApi';
+import { useStructureRestApi, type IStructureRestApi } from '../../../src/hooks/structureRestApi';
 
 type AnyInstance = { queryClient: QueryClient };
 
@@ -36,7 +33,11 @@ export function clearAllInstances(): void {
  * before the caller reads the hook's next value — mirroring what a component
  * calling this method from an event handler gets for free.
  */
-function callThroughAct(fn: (...args: unknown[]) => unknown, thisArgument: unknown, args: unknown[]): unknown {
+function callThroughAct(
+    fn: (...args: unknown[]) => unknown,
+    thisArgument: unknown,
+    args: unknown[]
+): unknown {
     let returned: unknown;
     // Returning `returned` from the act() callback (rather than starting a
     // second, later act() call once we notice it's a Promise) is what keeps
@@ -65,9 +66,10 @@ function liveHandle<C extends object>(getCurrent: () => C): C {
     return new Proxy({} as C, {
         get(_target, property) {
             const current = getCurrent();
-            const value = Reflect.get(current as object, property);
+            const value: unknown = Reflect.get(current as object, property);
             if (typeof value !== 'function') return value;
-            return (...args: unknown[]) => callThroughAct(value as (...a: unknown[]) => unknown, current, args);
+            return (...args: unknown[]) =>
+                callThroughAct(value as (...a: unknown[]) => unknown, current, args);
         }
     });
 }
@@ -102,7 +104,11 @@ export function makeRawHook<
     const { result } = renderHook(() =>
         useStructureRestApi<K, T>({ identifiers: 'id', TTL: 3_600_000, ...options })
     );
-    track({ get queryClient() { return result.current.queryClient; } });
+    track({
+        get queryClient() {
+            return result.current.queryClient;
+        }
+    });
     return result;
 }
 

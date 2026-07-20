@@ -11,7 +11,7 @@ states a contract, and nothing needs renaming once the bug is history.
 
 | Folder                 | What it proves                                                                                                                                                                           |
 | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `_helpers/`            | Shared fixtures, hook factories, fake API stubs, a stateful fake REST server, and fake-clock helpers. **Not** `*.spec.ts`, so Jest ignores them.                                   |
+| `_helpers/`            | Shared fixtures, hook factories, fake API stubs, a stateful fake REST server, and fake-clock helpers. **Not** `*.spec.ts`, so Jest ignores them.                                         |
 | `unit/`                | Direct per-function contracts — each fetch/mutate/search/loading function in isolation.                                                                                                  |
 | `ttl/`                 | Freshness over time with a **fake clock**: explicit _valid_ (`<TTL`) vs _stale_ (`>TTL`) cases per method, mixed per-id staleness, mutation↔freshness interplay, and concurrency dedupe. |
 | `search/`              | Filter params as cache keys (flat, array, and nested-object filters), per-page and per-pageSize buckets, server totals, and `searchCleanup` memory bounding.                             |

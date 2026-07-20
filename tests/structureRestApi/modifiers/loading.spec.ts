@@ -50,7 +50,7 @@ describe('MODIFIER · loading', () => {
         let during = true;
         await c.fetchAll(
             jest.fn(() => {
-                during = c.loading as boolean;
+                during = c.loading;
                 return Promise.resolve([...USERS]);
             }),
             { loading: false }
@@ -77,7 +77,7 @@ describe('MODIFIER · loading', () => {
         let during = true;
         await c.deleteTarget(
             jest.fn(() => {
-                during = c.loading as boolean;
+                during = c.loading;
                 return Promise.resolve({ ok: true });
             }),
             1,

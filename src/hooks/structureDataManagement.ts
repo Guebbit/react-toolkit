@@ -1,6 +1,5 @@
-import { useCallback, useMemo, useRef } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { generateFallbackValue } from '../utils/generateFallbackValue';
-import { useLiveState } from '../utils/useLiveState';
 
 export const useStructureDataManagement = <
     // type of item
@@ -99,27 +98,25 @@ export const useStructureDataManagement = <
      * So nothing here prunes on a timer or on cache expiry. The dictionary is emptied
      * only on teardown (resetRecords / resetAll / destroy) or, in useStructureRestApi,
      * on critical mass — see `maxRecords`.
+     *
+     * The ref holds the canonical live value so callbacks always see the latest write
+     * within the same tick. The state drives re-renders.
      */
-    const [itemDictionaryRef, setItemDictionary] = useLiveState<Record<K, T>>(
+    const itemDictionaryRef = useRef<Record<K, T>>({} as Record<K, T>);
+    const [itemDictionary, setItemDictionaryState] = useState<Record<K, T>>(
         () => ({}) as Record<K, T>
     );
-
-    /**
-     * The dictionary as of this render. Every mutator below writes through
-     * `itemDictionaryRef`, so within a single tick this snapshot can trail the
-     * live value by one or more writes — read it for rendering, and
-     * {@link getRecordDictionary} when a write must be read back immediately.
-     */
-    const itemDictionary = itemDictionaryRef.current;
+    const setItemDictionary = useCallback((next: Record<K, T>) => {
+        if (Object.is(next, itemDictionaryRef.current)) return;
+        itemDictionaryRef.current = next;
+        setItemDictionaryState(next);
+    }, []);
 
     /**
      * The dictionary as it is RIGHT NOW, including writes made earlier in this
      * same tick that React has not re-rendered for yet.
      */
-    const getRecordDictionary = useCallback(
-        (): Record<K, T> => itemDictionaryRef.current,
-        [itemDictionaryRef]
-    );
+    const getRecordDictionary = useCallback((): Record<K, T> => itemDictionaryRef.current, []);
 
     /**
      * List of items
@@ -155,7 +152,7 @@ export const useStructureDataManagement = <
         (..._arguments: (K | undefined)[]): T | undefined =>
             // Important to directly access the dictionary to avoid reactivity issues
             itemDictionaryRef.current[_arguments.join(identifierDelimiter) as K],
-        [itemDictionaryRef, identifierDelimiter]
+        [identifierDelimiter]
     );
 
     /**
@@ -176,15 +173,13 @@ export const useStructureDataManagement = <
      * Mirrors e.g. Laravel's lastInsertId() — read this right after an add/create
      * call when the id isn't available any other way (auto-generated fallback ids, deep call chains, ...).
      */
-    const [lastInsertedIdentifierRef, setLastInsertedIdentifier] = useLiveState<K | undefined>();
-    const lastInsertedIdentifier = lastInsertedIdentifierRef.current;
+    const [lastInsertedIdentifier, setLastInsertedIdentifier] = useState<K | undefined>();
 
     /**
      * Ids inserted by the most recent batch call (addRecords/editRecords).
      * Reset at the start of each batch call.
      */
-    const [lastInsertedIdentifiersRef, setLastInsertedIdentifiers] = useLiveState<K[]>(() => []);
-    const lastInsertedIdentifiers = lastInsertedIdentifiersRef.current;
+    const [lastInsertedIdentifiers, setLastInsertedIdentifiers] = useState<K[]>(() => []);
 
     /**
      * Record for @{lastInsertedIdentifier}
@@ -210,7 +205,7 @@ export const useStructureDataManagement = <
             setItemDictionary({ ...itemDictionaryRef.current, [id]: itemData });
             return itemData;
         },
-        [createIdentifier, setLastInsertedIdentifier, setItemDictionary, itemDictionaryRef]
+        [createIdentifier, setLastInsertedIdentifier, setItemDictionary]
     );
 
     /**
@@ -235,13 +230,7 @@ export const useStructureDataManagement = <
             if (ids.length > 0) setLastInsertedIdentifier(ids.at(-1));
             setLastInsertedIdentifiers(ids);
         },
-        [
-            createIdentifier,
-            setItemDictionary,
-            setLastInsertedIdentifier,
-            setLastInsertedIdentifiers,
-            itemDictionaryRef
-        ]
+        [createIdentifier, setItemDictionary, setLastInsertedIdentifier, setLastInsertedIdentifiers]
     );
 
     /**
@@ -293,13 +282,7 @@ export const useStructureDataManagement = <
             setLastInsertedIdentifier(_id);
             return _id;
         },
-        [
-            createIdentifier,
-            identifierDelimiter,
-            setItemDictionary,
-            setLastInsertedIdentifier,
-            itemDictionaryRef
-        ]
+        [createIdentifier, identifierDelimiter, setItemDictionary, setLastInsertedIdentifier]
     );
 
     /**
@@ -321,13 +304,7 @@ export const useStructureDataManagement = <
             if (ids.length > 0) setLastInsertedIdentifier(ids.at(-1));
             setLastInsertedIdentifiers(ids);
         },
-        [
-            createIdentifier,
-            setItemDictionary,
-            setLastInsertedIdentifier,
-            setLastInsertedIdentifiers,
-            itemDictionaryRef
-        ]
+        [createIdentifier, setItemDictionary, setLastInsertedIdentifier, setLastInsertedIdentifiers]
     );
 
     /**
@@ -345,14 +322,13 @@ export const useStructureDataManagement = <
             setItemDictionary(next);
             return true;
         },
-        [setItemDictionary, itemDictionaryRef]
+        [setItemDictionary]
     );
 
     /**
      * Selected ID
      */
-    const [selectedIdentifierRef, setSelectedIdentifier] = useLiveState<K | undefined>();
-    const selectedIdentifier = selectedIdentifierRef.current;
+    const [selectedIdentifier, setSelectedIdentifier] = useState<K | undefined>();
 
     /**
      * Selected item (by @{selectedIdentifier})
@@ -372,14 +348,12 @@ export const useStructureDataManagement = <
     /**
      * Current selected page (start with 1)
      */
-    const [pageCurrentRef, setPageCurrent] = useLiveState(1);
-    const pageCurrent = pageCurrentRef.current;
+    const [pageCurrent, setPageCurrent] = useState(1);
 
     /**
      * How many items in page
      */
-    const [pageSizeRef, setPageSize] = useLiveState(10);
-    const pageSize = pageSizeRef.current;
+    const [pageSize, setPageSize] = useState(10);
 
     /**
      * How many pages exist
@@ -405,11 +379,19 @@ export const useStructureDataManagement = <
 
     /**
      * If the item has a parent, here will be stored a "parent hasMany" relation
+     *
+     * The ref holds the canonical live value so callbacks always see the latest write
+     * within the same tick. The state drives re-renders.
      */
-    const [parentHasManyRef, setParentHasMany] = useLiveState<Record<P, K[]>>(
+    const parentHasManyRef = useRef<Record<P, K[]>>({} as Record<P, K[]>);
+    const [parentHasMany, setParentHasManyState] = useState<Record<P, K[]>>(
         () => ({}) as Record<P, K[]>
     );
-    const parentHasMany = parentHasManyRef.current;
+    const setParentHasMany = useCallback((next: Record<P, K[]>) => {
+        if (Object.is(next, parentHasManyRef.current)) return;
+        parentHasManyRef.current = next;
+        setParentHasManyState(next);
+    }, []);
 
     /**
      *
@@ -424,7 +406,7 @@ export const useStructureDataManagement = <
                 [parentId]: [...(current[parentId] ?? []), childId]
             });
         },
-        [setParentHasMany, parentHasManyRef]
+        [setParentHasMany]
     );
 
     /**
@@ -440,7 +422,7 @@ export const useStructureDataManagement = <
                 [parentId]: (current[parentId] ?? []).filter((id: K) => id !== childId)
             });
         },
-        [setParentHasMany, parentHasManyRef]
+        [setParentHasMany]
     );
 
     /**
@@ -455,7 +437,7 @@ export const useStructureDataManagement = <
                 [parentId]: [...new Set(current[parentId])]
             });
         },
-        [setParentHasMany, parentHasManyRef]
+        [setParentHasMany]
     );
 
     /**
@@ -474,7 +456,7 @@ export const useStructureDataManagement = <
             }
             return result;
         },
-        [getRecord, parentHasManyRef]
+        [getRecord]
     );
 
     /**

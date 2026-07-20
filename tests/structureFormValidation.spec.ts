@@ -29,7 +29,7 @@ describe('useStructureFormValidation', () => {
             const { result } = renderHook(() =>
                 useStructureFormValidation<ILoginForm>(INITIAL_LOGIN, loginSchema)
             );
-            (result.current.form as any).email = 'mutated@test.com';
+            result.current.form.email = 'mutated@test.com';
             expect(INITIAL_LOGIN.email).toBe('');
         });
     });
@@ -94,7 +94,10 @@ describe('useStructureFormValidation', () => {
                 useStructureFormValidation<ILoginForm>(INITIAL_LOGIN, loginSchema)
             );
             act(() => {
-                result.current.setInitialData({ email: 'fetched@test.com', password: 'fetchedPass' });
+                result.current.setInitialData({
+                    email: 'fetched@test.com',
+                    password: 'fetchedPass'
+                });
                 result.current.setForm({ email: 'edited@test.com' });
                 result.current.resetForm();
             });
@@ -109,7 +112,10 @@ describe('useStructureFormValidation', () => {
                 useStructureFormValidation<ILoginForm>(INITIAL_LOGIN, loginSchema)
             );
             act(() => {
-                result.current.setInitialData({ email: 'fetched@test.com', password: 'fetchedPass' });
+                result.current.setInitialData({
+                    email: 'fetched@test.com',
+                    password: 'fetchedPass'
+                });
             });
             expect(result.current.form).toEqual(INITIAL_LOGIN);
         });
@@ -134,12 +140,12 @@ describe('useStructureFormValidation', () => {
                 useStructureFormValidation<ILoginForm>(INITIAL_LOGIN, loginSchema)
             );
             // In React, activateAutoHydrate accepts a plain value (not a ref)
-            result.current.activateAutoHydrate(undefined);
+            result.current.activateAutoHydrate();
             expect(result.current.form).toEqual(INITIAL_LOGIN);
             expect(result.current.isDirty).toBe(false);
         });
 
-        it('adopts the source as the new baseline as soon as it resolves', async () => {
+        it('adopts the source as the new baseline as soon as it resolves', () => {
             const { result, rerender } = renderHook(
                 ({ source }: { source?: ILoginForm }) => {
                     const c = useStructureFormValidation<ILoginForm>(INITIAL_LOGIN, loginSchema);
@@ -149,7 +155,7 @@ describe('useStructureFormValidation', () => {
                 { initialProps: { source: undefined as ILoginForm | undefined } }
             );
 
-            await act(async () => {
+            act(() => {
                 rerender({ source: { email: 'hydrated@test.com', password: 'hydratedPass' } });
             });
 
@@ -160,7 +166,7 @@ describe('useStructureFormValidation', () => {
             expect(result.current.isDirty).toBe(false);
         });
 
-        it('keeps hydrating the form on later source changes, discarding local edits', async () => {
+        it('keeps hydrating the form on later source changes, discarding local edits', () => {
             const { result, rerender } = renderHook(
                 ({ source }: { source?: ILoginForm }) => {
                     const c = useStructureFormValidation<ILoginForm>(INITIAL_LOGIN, loginSchema);
@@ -174,7 +180,7 @@ describe('useStructureFormValidation', () => {
                 }
             );
 
-            await act(async () => {
+            act(() => {
                 rerender({ source: { email: 'first@test.com', password: 'firstPass' } });
             });
 
@@ -182,7 +188,7 @@ describe('useStructureFormValidation', () => {
                 result.current.setForm({ email: 'locallyEdited@test.com' });
             });
 
-            await act(async () => {
+            act(() => {
                 rerender({ source: { email: 'second@test.com', password: 'secondPass' } });
             });
 

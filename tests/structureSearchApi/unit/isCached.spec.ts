@@ -13,7 +13,12 @@ describe('UNIT · isPageCached / isPaginateCached', () => {
         const { searchApi, filters } = makeSearchHook<IArticle, number>({}, { category: 'tech' });
 
         expect(searchApi.isPageCached()).toBe(false);
-        await searchApi.fetchSearch(() => Promise.resolve(buildArticles(3)), filters.current, 1, 10);
+        await searchApi.fetchSearch(
+            () => Promise.resolve(buildArticles(3)),
+            filters.current,
+            1,
+            10
+        );
         expect(searchApi.isPageCached()).toBe(true);
     });
 

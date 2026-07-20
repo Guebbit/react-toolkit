@@ -85,7 +85,7 @@ describe('UNIT · fetchAny', () => {
         let during = false;
         await c.fetchAny(
             jest.fn(() => {
-                during = c.loading as boolean;
+                during = c.loading;
                 return Promise.resolve(1);
             })
         );
@@ -98,7 +98,7 @@ describe('UNIT · fetchAny', () => {
         let during = true;
         await c.fetchAny(
             jest.fn(() => {
-                during = c.loading as boolean;
+                during = c.loading;
                 return Promise.resolve(1);
             }),
             { loading: false }
