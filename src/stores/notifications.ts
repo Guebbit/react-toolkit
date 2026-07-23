@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { generateFallbackValue } from '../utils/generateFallbackValue';
+import { getUuid } from '@guebbit/js-toolkit';
 
 export enum IToastType {
     PRIMARY = 'primary',
@@ -56,7 +56,7 @@ export const useNotificationsStore = create<INotificationsState & INotifications
          * @param timeout
          */
         addMessage: (message: string, type = IToastType.PRIMARY, timeout = -1) => {
-            const id = generateFallbackValue();
+            const id = getUuid();
             // Add to history
             set((state) => ({
                 history: [

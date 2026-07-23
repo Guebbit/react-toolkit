@@ -63,7 +63,7 @@ export function makeSearchHook<
     T extends Record<string | number, any> = Record<string, any>,
     K extends string | number = Extract<keyof T, string | number>,
     F = object
->(restApiOptions: IStructureRestApi<K, T> = {}, initialFilters: F = {} as F) {
+>(restApiOptions: IStructureRestApi = {}, initialFilters: F = {} as F) {
     // Mutable filters object — tests mutate .current to simulate filter changes
     const filters = { current: initialFilters };
     const { result } = renderHook(() =>

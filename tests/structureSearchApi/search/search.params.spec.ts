@@ -4,7 +4,7 @@
  * Each distinct set of filters is its own cache bucket; equal filters (regardless
  * of key order, at ANY depth) share one. Covers flat string/number/boolean filters,
  * array-of-primitive filters, and nested-object filters (sort/range/geo shapes) —
- * all serialise stably via searchKeyGen -> stableNormalize.
+ * all serialise stably via searchKeyGen -> canonicalize.
  */
 
 import { makeSearchHook, clearAllInstances } from '../_helpers/harness';

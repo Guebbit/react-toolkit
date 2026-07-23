@@ -81,9 +81,9 @@ function liveHandle<C extends object>(getCurrent: () => C): C {
 export function makeHook<
     T extends Record<string | number, any> = Record<string, any>,
     K extends string | number = Extract<keyof T, string | number>
->(options: IStructureRestApi<K, T> = {}) {
+>(options: IStructureRestApi = {}) {
     const { result } = renderHook(() =>
-        useStructureRestApi<K, T>({ identifiers: 'id', TTL: 3_600_000, ...options })
+        useStructureRestApi<T, K>({ identifiers: 'id', TTL: 3_600_000, ...options })
     );
     return track(liveHandle(() => result.current));
 }
@@ -100,9 +100,9 @@ export function makeHook<
 export function makeRawHook<
     T extends Record<string | number, any> = Record<string, any>,
     K extends string | number = Extract<keyof T, string | number>
->(options: IStructureRestApi<K, T> = {}) {
+>(options: IStructureRestApi = {}) {
     const { result } = renderHook(() =>
-        useStructureRestApi<K, T>({ identifiers: 'id', TTL: 3_600_000, ...options })
+        useStructureRestApi<T, K>({ identifiers: 'id', TTL: 3_600_000, ...options })
     );
     track({
         get queryClient() {
@@ -120,10 +120,10 @@ export function makeRawHook<
 export function makeExternalLoading<
     T extends Record<string | number, any> = Record<string, any>,
     K extends string | number = Extract<keyof T, string | number>
->(loadingKey = 'resource', options: IStructureRestApi<K, T> = {}) {
+>(loadingKey = 'resource', options: IStructureRestApi = {}) {
     const store: Record<string, boolean> = {};
     const { result } = renderHook(() =>
-        useStructureRestApi<K, T>({
+        useStructureRestApi<T, K>({
             identifiers: 'id',
             TTL: 3_600_000,
             loadingKey,
@@ -156,16 +156,16 @@ export function makeShared<
         }
     });
     const { result: resultA } = renderHook(() =>
-        useStructureRestApi<K, T>({ identifiers: 'id', loadingKey, TTL, queryClient })
+        useStructureRestApi<T, K>({ identifiers: 'id', loadingKey, TTL, queryClient })
     );
     const { result: resultB } = renderHook(() =>
-        useStructureRestApi<K, T>({ identifiers: 'id', loadingKey, TTL, queryClient })
+        useStructureRestApi<T, K>({ identifiers: 'id', loadingKey, TTL, queryClient })
     );
     const a = track(liveHandle(() => resultA.current));
     const b = track(liveHandle(() => resultB.current));
     const make = () => {
         const { result } = renderHook(() =>
-            useStructureRestApi<K, T>({ identifiers: 'id', loadingKey, TTL, queryClient })
+            useStructureRestApi<T, K>({ identifiers: 'id', loadingKey, TTL, queryClient })
         );
         return track(liveHandle(() => result.current));
     };

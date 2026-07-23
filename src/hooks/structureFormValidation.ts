@@ -6,14 +6,18 @@ import { type ZodType } from 'zod';
  * Handles reactive form state, optional Zod schema validation and submission flow.
  *
  * @param initialData - Initial values for the form fields
- * @param schema      - Optional Zod schema used for validation
+ * @param schema      - Optional Zod schema used for validation, or a factory
+ *                      returning one (e.g. `() => createUsersSchema(t)`). Use
+ *                      the factory form when the schema's messages depend on
+ *                      i18n, so a language change is picked up on the next
+ *                      validate() instead of being frozen at hook-creation time.
  */
 export const useStructureFormValidation = <
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     T extends Record<string, any> = Record<string, any>
 >(
     initialData: T = {} as T,
-    schema?: ZodType<T>
+    schema?: ZodType<T> | (() => ZodType<T>)
 ) => {
     /**
      * Baseline values resetForm() restores and isDirty compares against.
@@ -137,7 +141,8 @@ export const useStructureFormValidation = <
             return true;
         }
 
-        const result = schema.safeParse(formRef.current);
+        const resolvedSchema = typeof schema === 'function' ? schema() : schema;
+        const result = resolvedSchema.safeParse(formRef.current);
 
         if (result.success) {
             setFormErrors({});
@@ -199,7 +204,7 @@ export const useStructureFormValidation = <
      * @param item - the record to hydrate from, or undefined while it is pending
      */
     const hydratedFromRef = useRef<string | undefined>(undefined);
-    const activateAutoHydrate = useCallback((item: T | undefined | null) => {
+    const activateAutoHydrate = useCallback((item?: T | null) => {
         if (!item) return;
         // Compared by value, not identity: a re-fetch that resolves to an
         // equal record produces a new object every time, and re-hydrating on

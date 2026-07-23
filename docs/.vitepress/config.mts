@@ -2,9 +2,9 @@ import { defineConfig } from 'vitepress'
 
 // https://vitepress.dev/reference/site-config
 export default defineConfig({
-  title: '@guebbit/vue-toolkit',
-  description: 'Vue 3 composables and Pinia stores for CRUD screens: caching, optimistic updates, rollback, and form validation.',
-  base: '/vue-toolkit/',
+  title: '@guebbit/react-toolkit',
+  description: 'React 3 composables and Pinia stores for CRUD screens: caching, optimistic updates, rollback, and form validation.',
+  base: '/react-toolkit/',
   themeConfig: {
     // https://vitepress.dev/reference/default-theme-config
     nav: [
@@ -16,7 +16,10 @@ export default defineConfig({
     sidebar: [
       {
         text: 'Guide',
-        items: [{ text: 'Getting Started', link: '/guide/getting-started' }]
+        items: [
+          { text: 'Getting Started', link: '/guide/getting-started' },
+          { text: 'Testing', link: '/guide/testing' }
+        ]
       },
       {
         text: 'Composables',
@@ -35,6 +38,6 @@ export default defineConfig({
       }
     ],
 
-    socialLinks: [{ icon: 'github', link: 'https://github.com/Guebbit/vue-toolkit' }]
+    socialLinks: [{ icon: 'github', link: 'https://github.com/Guebbit/react-toolkit' }]
   }
 })

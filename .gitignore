@@ -39,3 +39,7 @@ pnpmfile.js
 # Log's files.
 *.log
 *.log.*
+
+# Stryker mutation testing artifacts.
+.stryker-tmp/
+reports/

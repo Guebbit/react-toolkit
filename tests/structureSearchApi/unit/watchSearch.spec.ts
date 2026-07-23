@@ -1,6 +1,10 @@
 /**
- * UNIT — watchSearch: fetchSearch's reactive counterpart, pre-bound to the
- * hook's own filtersSource.
+ * UNIT — useWatchSearch: fetchSearch's reactive counterpart, the React-first
+ * equivalent of a Vue `watch([pageCurrent, pageSize], ...)`.
+ *
+ * A `useEffect` re-runs the search whenever the api's pageCurrent/pageSize change,
+ * reading whatever filters the api is bound to. No stop handle — unmount cleans up.
+ *
  *   - fires immediately (by default) using pageCurrent/pageSize and the current filters
  *   - refetches when pageCurrent or pageSize change
  *   - does NOT refetch on its own when the filters change (filters are read, not watched)
@@ -8,198 +12,250 @@
  *   - search(): triggers a fetch on demand with whatever filters/page/pageSize hold now
  *   - search(true): forces even when the page is already cached
  *   - onSuccess/onError/onSettled fire with the right arguments
- *   - stop(): stops the pageCurrent/pageSize watcher
  */
 
 import { act, renderHook } from '@testing-library/react';
-import { useStructureSearchApi } from '../../../src/hooks/structureSearchApi';
-import { track, makeSearchHook, clearAllInstances } from '../_helpers/harness';
+import {
+    useStructureSearchApi,
+    useWatchSearch,
+    type IWatchSearchSettings
+} from '../../../src/hooks/structureSearchApi';
+import { track, clearAllInstances } from '../../structureRestApi/_helpers/harness';
 import { buildArticles, type IArticle } from '../../structureRestApi/_helpers/fixtures';
 
 afterEach(clearAllInstances);
 
-const TECH_FILTERS = { category: 'tech' };
-const make = (initialFilters: { category?: string } = TECH_FILTERS) =>
-    makeSearchHook<IArticle, number, { category?: string }>({}, initialFilters);
+type Filters = { category?: string };
+
+const TECH_FILTERS: Filters = { category: 'tech' };
 const TECH = buildArticles(5, 'tech', 1);
 
-/** Flushes the microtask queue past runQuery's several internal `.then` hops. */
-const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+/** Flush pending fetch microtasks. */
+const flush = () => act(async () => {});
 
 /** Records every (filters, page, pageSize) triple it was called with. */
 const fakeApiCall = (items: IArticle[] = TECH) =>
-    jest.fn((filters: { category?: string }, page: number, pageSize: number) =>
-        Promise.resolve(items)
-    );
+    jest.fn((_filters: Filters, _page: number, _pageSize: number) => Promise.resolve(items));
 
-describe('UNIT · watchSearch', () => {
-    it('fires immediately, reading the current filters/page/pageSize', () => {
-        const { searchApi } = make();
+/**
+ * Renders useStructureSearchApi + useWatchSearch together against a mutable
+ * `filters` object (mutating `.current` models filters changing without a render).
+ */
+const renderWatch = (
+    apiCall: (f: Filters, p: number, s: number) => Promise<(IArticle | undefined)[]>,
+    settings?: IWatchSearchSettings<IArticle, Filters>,
+    initialFilters: Filters = TECH_FILTERS
+) => {
+    const filters = { current: initialFilters };
+    const view = renderHook(() => {
+        const api = useStructureSearchApi<IArticle, number, string | number, Filters>(
+            () => filters.current
+        );
+        const { search } = useWatchSearch(api, apiCall, settings);
+        return { api, search };
+    });
+    track({
+        get queryClient() {
+            return view.result.current.api.queryClient;
+        }
+    });
+    return { ...view, filters };
+};
+
+describe('UNIT · useWatchSearch', () => {
+    it('fires immediately, reading the current filters/page/pageSize', async () => {
         const apiCall = fakeApiCall();
-        const { stop } = searchApi.watchSearch(apiCall);
+        renderWatch(apiCall);
 
         expect(apiCall).toHaveBeenCalledTimes(1);
         expect(apiCall).toHaveBeenCalledWith({ category: 'tech' }, 1, 10);
-        stop();
-    });
-
-    it('accepts a getter as filtersSource, bound at construction', () => {
-        const filters = { category: 'tech' };
-        const { result } = renderHook(() => useStructureSearchApi<IArticle, number>(() => filters));
-        const searchApi = track(result.current);
-        const apiCall = fakeApiCall();
-        const { stop } = searchApi.watchSearch(apiCall);
-
-        expect(apiCall).toHaveBeenCalledWith({ category: 'tech' }, 1, 10);
-        stop();
+        // Let the mount fetch settle inside act() (its state update lands post-assert).
+        await flush();
     });
 
     it('skips the initial run when immediate is false', () => {
-        const { searchApi } = make({});
         const apiCall = fakeApiCall();
-        const { stop } = searchApi.watchSearch(apiCall, { immediate: false });
+        renderWatch(apiCall, { immediate: false }, {});
 
         expect(apiCall).not.toHaveBeenCalled();
-        stop();
     });
 
     it('refetches when pageCurrent changes', async () => {
-        const { searchApi } = make({});
         const apiCall = fakeApiCall();
-        const { stop } = searchApi.watchSearch(apiCall);
+        const { result } = renderWatch(apiCall, undefined, {});
         await flush();
+        expect(apiCall).toHaveBeenCalledTimes(1);
 
-        searchApi.setPageCurrent(2);
+        act(() => result.current.api.setPageCurrent(2));
         await flush();
 
         expect(apiCall).toHaveBeenCalledTimes(2);
         expect(apiCall).toHaveBeenLastCalledWith({}, 2, 10);
-        stop();
     });
 
     it('refetches when pageSize changes', async () => {
-        const { searchApi } = make({});
         const apiCall = fakeApiCall();
-        const { stop } = searchApi.watchSearch(apiCall);
+        const { result } = renderWatch(apiCall, undefined, {});
         await flush();
+        expect(apiCall).toHaveBeenCalledTimes(1);
 
-        searchApi.setPageSize(25);
+        act(() => result.current.api.setPageSize(25));
         await flush();
 
         expect(apiCall).toHaveBeenCalledTimes(2);
         expect(apiCall).toHaveBeenLastCalledWith({}, 1, 25);
-        stop();
     });
 
     it('does not refetch on its own when filters change', async () => {
-        const { filters, searchApi } = make();
         const apiCall = fakeApiCall();
-        const { stop } = searchApi.watchSearch(apiCall);
+        const { filters } = renderWatch(apiCall);
         await flush();
+        expect(apiCall).toHaveBeenCalledTimes(1);
 
+        // Mutating the bound filters triggers no render, so no search.
         filters.current = { category: 'design' };
         await flush();
 
         expect(apiCall).toHaveBeenCalledTimes(1);
-        stop();
+    });
+
+    it('does not re-search on an unrelated re-render (search/getFilters stay stable)', async () => {
+        // TTL:0 makes every cache entry immediately stale, so if the watch effect
+        // re-ran it WOULD re-hit apiCall — the cache can no longer mask a spurious
+        // re-run. The count therefore proves the effect fired exactly once, which
+        // only holds if `search` (and the getFilters/fetchSearch it closes over)
+        // keep a stable identity across renders the effect must ignore.
+        const apiCall = fakeApiCall();
+        const filters = { current: TECH_FILTERS };
+        const view = renderHook(
+            // `nonce` is an unrelated prop: bumping it re-renders the host without
+            // touching filters/pageCurrent/pageSize — the effect must not fire.
+            ({ nonce: _nonce }: { nonce: number }) => {
+                const api = useStructureSearchApi<IArticle, number, string | number, Filters>(
+                    () => filters.current,
+                    { TTL: 0 }
+                );
+                const { search } = useWatchSearch(api, apiCall);
+                return { api, search };
+            },
+            { initialProps: { nonce: 0 } }
+        );
+        track({
+            get queryClient() {
+                return view.result.current.api.queryClient;
+            }
+        });
+        await flush();
+        expect(apiCall).toHaveBeenCalledTimes(1);
+
+        act(() => view.rerender({ nonce: 1 }));
+        await flush();
+        act(() => view.rerender({ nonce: 2 }));
+        await flush();
+
+        expect(apiCall).toHaveBeenCalledTimes(1);
     });
 
     it('search() triggers a fetch on demand with the current filters/page/pageSize', async () => {
-        const { filters, searchApi } = make();
         const apiCall = fakeApiCall();
-        const { stop, search } = searchApi.watchSearch(apiCall, { immediate: false });
+        const { result, filters } = renderWatch(apiCall, { immediate: false });
 
         filters.current = { category: 'design' };
-        await search();
+        await act(async () => {
+            await result.current.search();
+        });
 
         expect(apiCall).toHaveBeenCalledTimes(1);
         expect(apiCall).toHaveBeenCalledWith({ category: 'design' }, 1, 10);
-        stop();
     });
 
     it('search() resolves with the fetched items and stores them', async () => {
-        const { searchApi } = make({});
-        const { stop, search } = searchApi.watchSearch(fakeApiCall(), { immediate: false });
+        const { result } = renderWatch(fakeApiCall(), { immediate: false }, {});
 
-        // search() is a plain closure returned by watchSearch, not one of
-        // searchApi's own live-wrapped methods, so its state update needs an
-        // explicit act() to flush before reading searchApi.getRecord below.
         let items: unknown;
         await act(async () => {
-            items = await search();
+            items = await result.current.search();
         });
+
         expect(items).toEqual(TECH);
-        expect(searchApi.getRecord(1)).toEqual(TECH[0]);
-        stop();
+        expect(result.current.api.getRecord(1)).toEqual(TECH[0]);
     });
 
     it('a repeated search() within TTL is served from cache (apiCall not re-invoked)', async () => {
-        const { searchApi } = make({});
         const apiCall = fakeApiCall();
-        const { stop, search } = searchApi.watchSearch(apiCall, { immediate: false });
+        const { result } = renderWatch(apiCall, { immediate: false }, {});
 
-        await search();
-        await search();
+        await act(async () => {
+            await result.current.search();
+        });
+        await act(async () => {
+            await result.current.search();
+        });
 
         expect(apiCall).toHaveBeenCalledTimes(1);
-        stop();
     });
 
     it('search(true) forces a re-fetch even when cached', async () => {
-        const { searchApi } = make({});
         const apiCall = fakeApiCall();
-        const { stop, search } = searchApi.watchSearch(apiCall, { immediate: false });
+        const { result } = renderWatch(apiCall, { immediate: false }, {});
 
-        await search();
-        await search(true);
+        await act(async () => {
+            await result.current.search();
+        });
+        await act(async () => {
+            await result.current.search(true);
+        });
 
         expect(apiCall).toHaveBeenCalledTimes(2);
-        stop();
     });
 
     it('calls onSuccess/onSettled with the fetched items and filters', async () => {
-        const { searchApi } = make();
         const onSuccess = jest.fn();
         const onSettled = jest.fn();
         const onError = jest.fn();
-        const { stop } = searchApi.watchSearch(fakeApiCall(), { onSuccess, onError, onSettled });
+        renderWatch(fakeApiCall(), { onSuccess, onError, onSettled });
         await flush();
 
         expect(onSuccess).toHaveBeenCalledWith(TECH, { category: 'tech' });
         expect(onSettled).toHaveBeenCalledWith(TECH, undefined, { category: 'tech' });
         expect(onError).not.toHaveBeenCalled();
-        stop();
     });
 
     it('calls onError/onSettled when the search rejects, and search() does not throw', async () => {
-        const { searchApi } = make();
         const error = new Error('network error');
         const apiCall = jest.fn(() => Promise.reject(error));
         const onSuccess = jest.fn();
         const onError = jest.fn();
         const onSettled = jest.fn();
-        const { stop, search } = searchApi.watchSearch(apiCall, {
+        const { result } = renderWatch(apiCall, {
             immediate: false,
             onSuccess,
             onError,
             onSettled
         });
 
-        await expect(search()).resolves.toBeUndefined();
+        let resolved: unknown = 'unset';
+        await act(async () => {
+            resolved = await result.current.search();
+        });
+
+        expect(resolved).toBeUndefined();
         expect(onError).toHaveBeenCalledWith(error, { category: 'tech' });
         expect(onSettled).toHaveBeenCalledWith(undefined, error, { category: 'tech' });
         expect(onSuccess).not.toHaveBeenCalled();
-        stop();
     });
 
-    it('stop() stops the pageCurrent/pageSize watcher', async () => {
-        const { searchApi } = make({});
+    it('stops on unmount: a later page change fires no search', async () => {
         const apiCall = fakeApiCall();
-        const { stop } = searchApi.watchSearch(apiCall);
+        const { result, unmount } = renderWatch(apiCall, undefined, {});
         await flush();
-        stop();
+        expect(apiCall).toHaveBeenCalledTimes(1);
 
-        searchApi.setPageCurrent(2);
+        const setPageCurrent = result.current.api.setPageCurrent;
+        unmount();
+        // The state setter still exists, but with the component unmounted the
+        // effect that would search is gone.
+        act(() => setPageCurrent(2));
         await flush();
 
         expect(apiCall).toHaveBeenCalledTimes(1);

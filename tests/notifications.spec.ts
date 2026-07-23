@@ -1,5 +1,14 @@
 import { useNotificationsStore, IToastType } from '../src/stores/notifications';
 
+/** Adds three messages and returns their ids in insertion order. */
+const addThree = () => {
+    const store = useNotificationsStore.getState();
+    store.addMessage('one', IToastType.PRIMARY);
+    store.addMessage('two', IToastType.PRIMARY);
+    store.addMessage('three', IToastType.PRIMARY);
+    return useNotificationsStore.getState().history.map(({ id }) => id);
+};
+
 describe('useNotificationsStore', () => {
     beforeEach(() => {
         // Reset Zustand store state before each test
@@ -63,6 +72,44 @@ describe('useNotificationsStore', () => {
         expect(useNotificationsStore.getState().history).toHaveLength(0);
     });
 
+    describe('operations target ONLY the given id (isolation)', () => {
+        it('hideMessage hides only the target, leaving the others visible', () => {
+            const [, second] = addThree();
+            useNotificationsStore.getState().hideMessage(second);
+
+            const visible = useNotificationsStore.getState().getMessages();
+            expect(visible.map((m) => m.message)).toEqual(['one', 'three']); // 'two' gone, rest stay
+        });
+
+        it('showMessage shows only the target, leaving the others as they were', () => {
+            const [first, second, third] = addThree();
+            const store = useNotificationsStore.getState();
+            store.hideMessage(first);
+            store.hideMessage(second);
+            store.hideMessage(third);
+            // now reveal just the middle one
+            store.showMessage(second);
+
+            const visible = useNotificationsStore.getState().getMessages();
+            expect(visible.map((m) => m.message)).toEqual(['two']); // only 'two' back, not all
+        });
+
+        it('removeMessage removes only the target, keeping the rest of history', () => {
+            const [, second] = addThree();
+            useNotificationsStore.getState().removeMessage(second);
+
+            const remaining = useNotificationsStore.getState().history;
+            expect(remaining.map((m) => m.message)).toEqual(['one', 'three']); // only 'two' removed
+        });
+
+        it('findMessage returns the matching message, and undefined for an unknown id', () => {
+            const [, second] = addThree();
+            const store = useNotificationsStore.getState();
+            expect(store.findMessage(second)?.message).toBe('two'); // the RIGHT one, not just the first
+            expect(store.findMessage('does-not-exist')).toBeUndefined();
+        });
+    });
+
     it('finds a message by id', () => {
         const s0 = useNotificationsStore.getState();
         s0.addMessage('Find me', IToastType.SECONDARY);
@@ -75,5 +122,33 @@ describe('useNotificationsStore', () => {
     it('dialogs are empty by default', () => {
         const store = useNotificationsStore.getState();
         expect(Object.keys(store.dialogs)).toHaveLength(0);
+    });
+
+    describe('auto-hide timeout', () => {
+        beforeEach(() => jest.useFakeTimers());
+        afterEach(() => jest.useRealTimers());
+
+        it('hides a message automatically after a positive timeout', () => {
+            const store = useNotificationsStore.getState();
+            store.addMessage('Temporary', IToastType.PRIMARY, 1000);
+            expect(useNotificationsStore.getState().getMessages()).toHaveLength(1);
+
+            jest.advanceTimersByTime(999);
+            expect(useNotificationsStore.getState().getMessages()).toHaveLength(1); // not yet
+
+            jest.advanceTimersByTime(1);
+            const s = useNotificationsStore.getState();
+            expect(s.getMessages()).toHaveLength(0); // hidden at the deadline
+            expect(s.history).toHaveLength(1); // but still in history (hidden, not removed)
+        });
+
+        it('does NOT schedule any hide when timeout is <= 0', () => {
+            const store = useNotificationsStore.getState();
+            store.addMessage('Sticky', IToastType.PRIMARY); // default timeout -1
+            store.addMessage('AlsoSticky', IToastType.PRIMARY, 0); // explicit 0
+
+            jest.advanceTimersByTime(1_000_000);
+            expect(useNotificationsStore.getState().getMessages()).toHaveLength(2); // both stay visible
+        });
     });
 });

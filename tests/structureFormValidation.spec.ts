@@ -461,4 +461,78 @@ describe('useStructureFormValidation', () => {
             expect(handler).toHaveBeenCalled();
         });
     });
+
+    // ─── initial flags ────────────────────────────────────────────────────
+
+    describe('initial flags', () => {
+        it('showFormErrors starts false (a pristine form is not shown as invalid)', () => {
+            const { result } = renderHook(() =>
+                useStructureFormValidation<ILoginForm>(INITIAL_LOGIN, loginSchema)
+            );
+            expect(result.current.showFormErrors).toBe(false);
+        });
+
+        it('isSubmitting starts false', () => {
+            const { result } = renderHook(() =>
+                useStructureFormValidation<ILoginForm>(INITIAL_LOGIN, loginSchema)
+            );
+            expect(result.current.isSubmitting).toBe(false);
+        });
+    });
+
+    // ─── validate: factory schema + multi-error accumulation ──────────────
+
+    describe('validate — schema factory form', () => {
+        // The factory form `() => schema` exists so i18n message changes are picked
+        // up on the next validate(); it must be CALLED, not used as the schema object.
+        it('resolves and uses a function-returning-schema', () => {
+            const { result } = renderHook(() =>
+                useStructureFormValidation<ILoginForm>(INITIAL_LOGIN, () => loginSchema)
+            );
+
+            // invalid to start → validate returns false and surfaces the messages
+            let invalidPass: boolean | undefined;
+            act(() => {
+                invalidPass = result.current.validate();
+            });
+            expect(invalidPass).toBe(false);
+            expect(result.current.formErrors.email).toContain('Invalid email address');
+
+            act(() => {
+                result.current.setForm({ email: 'valid@test.com', password: 'validPassword' });
+            });
+            let validPass: boolean | undefined;
+            act(() => {
+                validPass = result.current.validate();
+            });
+            expect(validPass).toBe(true);
+        });
+    });
+
+    describe('validate — multiple errors on one field', () => {
+        interface IPasswordForm {
+            password: string;
+        }
+        const strongSchema = z.object({
+            password: z.string().min(8, 'at least 8 characters').regex(/\d/, 'at least one digit')
+        });
+
+        it('accumulates EVERY failing check for a field, not just the last one', () => {
+            const { result } = renderHook(() =>
+                useStructureFormValidation<IPasswordForm>({ password: '' }, strongSchema)
+            );
+            act(() => {
+                result.current.setForm({ password: 'ab' }); // fails BOTH min(8) and regex(/\d/)
+            });
+            act(() => {
+                result.current.validate();
+            });
+
+            // Both messages must survive: a per-issue reset would keep only one.
+            expect(result.current.formErrors.password).toEqual([
+                'at least 8 characters',
+                'at least one digit'
+            ]);
+        });
+    });
 });

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { QueryClient } from '@tanstack/query-core';
-import { stableNormalize } from '../utils/stableNormalize';
+import { canonicalize } from '@guebbit/js-toolkit';
 import { useStructureRestApi, type IFetchSettings } from './structureRestApi';
 
 /**
@@ -9,7 +9,7 @@ import { useStructureRestApi, type IFetchSettings } from './structureRestApi';
 export type ISearchCache<K = string | number> = Record<string, Record<number, K[]>>;
 
 /**
- * Settings accepted by `watchSearch`: `IFetchSettings` plus the watcher-specific
+ * Settings accepted by `useWatchSearch`: `IFetchSettings` plus the watcher-specific
  * knob (immediate) and lifecycle callbacks (onSuccess/onError/onSettled).
  */
 export interface IWatchSearchSettings<
@@ -24,6 +24,16 @@ export interface IWatchSearchSettings<
 }
 
 /**
+ * Combines a search's cacheKey (filters + pageSize) with the caller's own
+ * lastUpdateKey, if any, into the single lastUpdateKey dimension fetchPaginate
+ * accepts. The result always starts with `searchKey` — searchCleanup depends on
+ * that prefix to match every cached bucket of one search regardless of
+ * lastUpdateKey.
+ */
+const combineKey = (searchKey: string, lastUpdateKey = ''): string =>
+    lastUpdateKey ? searchKey + '|' + lastUpdateKey : searchKey;
+
+/**
  * Reads the current value out of a getter function or a plain value.
  * In React context, filters are passed directly as values or via refs.
  */
@@ -35,8 +45,9 @@ const readSource = <X>(source: X | (() => X)): X =>
  * — the same composition pattern useStructureRestApi itself uses on top of
  * useStructureDataManagement: `settings` is forwarded straight through as its options.
  *
- * Adds `fetchSearch`, `watchSearch`, `searchGet`, `checkSearch`, and the page-cache
- * bookkeeping (`searchCached`) behind them.
+ * Adds `fetchSearch`, `searchGet`, `checkSearch`, and the page-cache bookkeeping
+ * (`searchCached`) behind them; pair it with the `useWatchSearch` hook (exported
+ * below) for reactive, page-driven searching.
  *
  * `pageItemList` is overridden to be scoped to the CURRENT search's current page,
  * instead of a slice of the whole local item dictionary — otherwise its value would
@@ -59,17 +70,17 @@ export const useStructureSearchApi = <
     F = object
 >(
     filtersSource: F | (() => F),
-    settings?: Parameters<typeof useStructureRestApi<K, T, P>>[0]
+    settings?: Parameters<typeof useStructureRestApi<T, K, P>>[0]
 ) => {
     // Create the underlying REST API hook
-    const restSettings: Parameters<typeof useStructureRestApi<K, T, P>>[0] = settings ?? {};
+    const restSettings: Parameters<typeof useStructureRestApi<T, K, P>>[0] = settings ?? {};
 
-    const api = useStructureRestApi<K, T, P>(restSettings);
+    const api = useStructureRestApi<T, K, P>(restSettings);
 
     /**
      * fetchSearch/checkSearch are built on top of these restApi primitives
      * instead of reimplementing them:
-     *  - pageCurrent/pageSize: shared pagination state driving fetchSearch/watchSearch
+     *  - pageCurrent/pageSize: shared pagination state driving fetchSearch/useWatchSearch
      *  - createIdentifier: builds the id list stored per page in searchCached
      *  - getRecords: resolves searchCached's stored ids back into items for searchGet
      *  - fetchPaginate/checkPaginate: the fetch/freshness primitives fetchSearch
@@ -91,6 +102,16 @@ export const useStructureSearchApi = <
     } = api;
 
     /**
+     * Reads the CURRENT filters this hook is bound to. Kept behind a ref so its
+     * identity is stable while always returning the latest value — `filtersSource`
+     * may be a getter reading external, non-React storage (e.g. a ref) whose value
+     * changes without a re-render, so it must be read fresh on every call.
+     */
+    const filtersSourceRef = useRef(filtersSource);
+    filtersSourceRef.current = filtersSource;
+    const getFilters = useCallback((): F => readSource(filtersSourceRef.current), []);
+
+    /**
      * Cached item ids per page, keyed by (filters, pageSize). The item DATA lives
      * in restApi's item dictionary; this only tracks which ids answered which search.
      */
@@ -107,11 +128,11 @@ export const useStructureSearchApi = <
 
     /**
      * Create a stable and always-the-same key from an object.
-     * Nested objects are supported: see stableNormalize.
+     * Nested objects are supported: see canonicalize.
      * @param object
      */
     const searchKeyGen = useCallback(
-        (object: object = {}) => JSON.stringify(stableNormalize(object)),
+        (object: object = {}) => JSON.stringify(canonicalize(object)),
         []
     );
 
@@ -215,8 +236,8 @@ export const useStructureSearchApi = <
 
             return fetchPaginate(apiCall, page, pageSize, {
                 ...settings,
-                lastUpdateKey: searchKey
-            }).then((items) => {
+                lastUpdateKey: combineKey(searchKey, settings.lastUpdateKey ?? '')
+            }).then((items = []) => {
                 // Reset and repopulate the page-to-ids map
                 setSearchCached((prev) => {
                     const newCache = { ...prev };
@@ -243,107 +264,15 @@ export const useStructureSearchApi = <
             filters: FF = {} as FF,
             page = 1,
             pageSize = 10,
-            checkSettings?: { TTL?: number }
+            { lastUpdateKey = '', TTL }: Pick<IFetchSettings, 'lastUpdateKey' | 'TTL'> = {}
         ): boolean => {
             const searchKey = searchKeyGen(filters as object) + ':' + pageSize;
-            return checkPaginate(page, pageSize, { ...checkSettings, lastUpdateKey: searchKey });
+            return checkPaginate(page, pageSize, {
+                lastUpdateKey: combineKey(searchKey, lastUpdateKey),
+                TTL
+            });
         },
         [searchKeyGen, checkPaginate]
-    );
-
-    // pageCurrent/pageSize read fresh (via refs) by every active watchSearch()
-    // call, and re-triggered on every actual change — see watchSearch below.
-    const pageCurrentRef = useRef(pageCurrent);
-    pageCurrentRef.current = pageCurrent;
-    const pageSizeRef = useRef(pageSize);
-    pageSizeRef.current = pageSize;
-
-    const activeWatchersRef = useRef<Set<() => void>>(new Set());
-
-    useEffect(() => {
-        for (const trigger of activeWatchersRef.current) trigger();
-        // Only an ACTUAL pageCurrent/pageSize change should re-trigger active
-        // watchers — filters are read, not watched (see watchSearch's own doc
-        // comment below). Triggers themselves always read the latest values via
-        // pageCurrentRef/pageSizeRef, never a stale closure.
-    }, [pageCurrent, pageSize]);
-
-    /**
-     * fetchSearch's reactive counterpart: watches this hook's own
-     * pageCurrent/pageSize and re-runs fetchSearch whenever either changes,
-     * using whatever filters `searchFiltersSource` currently holds.
-     *
-     * Filters are READ, not watched: this hook has no opinion on when a filter
-     * edit should trigger a search (as-you-type vs on-submit is a UI decision it
-     * shouldn't make for you). A filter change only takes effect the next time
-     * `search()` runs — via a pageCurrent/pageSize change, or your own call to the
-     * returned `search()`. If you want as-you-type search, watch your filters
-     * yourself (debounced, if desired) and call `search()` from that watcher.
-     *
-     * @param apiCall       - filters/page/pageSize-parametrized, since all three can change
-     * @param searchFiltersSource - Current filters or getter producing the current filters
-     * @param immediate     - run once on creation, e.g. for the initial page load (default true)
-     * @param onSuccess     - called with the fetched items after a successful search
-     * @param onError       - called with the error after a failed search (otherwise swallowed,
-     *                        same as an unhandled watch callback)
-     * @param onSettled     - called after either outcome
-     * @param settings      - forwarded to fetchSearch (forced, merge, TTL, ...)
-     * @returns { stop, search } — stop the watcher, or trigger a search on demand
-     *          (e.g. from a "reset page to 1 and search now" handler, where the
-     *          page/pageSize watcher alone wouldn't fire because pageCurrent was
-     *          already 1)
-     */
-    const watchSearch = useCallback(
-        <FF = F>(
-            apiCall: (filters: FF, page: number, pageSize: number) => Promise<(T | undefined)[]>,
-            searchFiltersSource: FF | (() => FF),
-            {
-                immediate = true,
-                onSuccess,
-                onError,
-                onSettled,
-                ...settings
-            }: IWatchSearchSettings<T, FF> = {}
-        ): {
-            stop: () => void;
-            search: (forced?: boolean) => Promise<(T | undefined)[] | undefined>;
-        } => {
-            let stopped = false;
-
-            const search = async (forced = false) => {
-                if (stopped) return;
-                const filters = readSource(searchFiltersSource);
-                const page = pageCurrentRef.current;
-                const size = pageSizeRef.current;
-                return fetchSearch(() => apiCall(filters, page, size), filters, page, size, {
-                    ...settings,
-                    forced: forced || settings.forced
-                })
-                    .then((items) => {
-                        onSuccess?.(items, filters);
-                        onSettled?.(items, undefined, filters);
-                        return items;
-                    })
-                    .catch((error: unknown): undefined => {
-                        onError?.(error, filters);
-                        onSettled?.(undefined, error, filters);
-                        return;
-                    });
-            };
-
-            const trigger = () => void search();
-
-            if (immediate) trigger();
-            activeWatchersRef.current.add(trigger);
-
-            const stop = () => {
-                stopped = true;
-                activeWatchersRef.current.delete(trigger);
-            };
-
-            return { stop, search };
-        },
-        [fetchSearch]
     );
 
     /**
@@ -351,11 +280,9 @@ export const useStructureSearchApi = <
      * served from cache right now?
      */
     const isPageCached = useCallback(
-        (settings?: Pick<IFetchSettings, 'lastUpdateKey' | 'TTL'>): boolean => {
-            const filters = readSource(filtersSource);
-            return checkSearch(filters as object, pageCurrent, pageSize, settings);
-        },
-        [pageCurrent, pageSize, filtersSource, checkSearch]
+        (settings?: Pick<IFetchSettings, 'lastUpdateKey' | 'TTL'>): boolean =>
+            checkSearch(getFilters() as object, pageCurrent, pageSize, settings),
+        [pageCurrent, pageSize, getFilters, checkSearch]
     );
 
     /**
@@ -366,19 +293,6 @@ export const useStructureSearchApi = <
             return checkPaginate(pageCurrent, pageSize, settings);
         },
         [checkPaginate, pageCurrent, pageSize]
-    );
-
-    /**
-     * `watchSearch`, pre-bound to this hook's own filtersSource so callers
-     * don't have to pass it (and can't accidentally pass a different one than
-     * `pageItemList` above is reading).
-     */
-    const watchCurrentSearch = useCallback(
-        (
-            apiCall: (filters: F, page: number, pageSize: number) => Promise<(T | undefined)[]>,
-            settings?: IWatchSearchSettings<T, F>
-        ) => watchSearch<F>(apiCall, filtersSource, settings),
-        [filtersSource, watchSearch]
     );
 
     /**
@@ -421,11 +335,14 @@ export const useStructureSearchApi = <
         // change without a re-render, so this must recompute on every read, not
         // just on the renders React already knows to schedule.
         get pageItemList() {
-            const filters = readSource(filtersSource);
-            return searchGet(filters as object, pageCurrent, pageSize);
+            return searchGet(getFilters() as object, pageCurrent, pageSize);
         },
         resetAll,
         destroy,
+
+        // Current filters this instance is bound to (read fresh). Consumed by
+        // useWatchSearch and available to callers that need the live filters.
+        getFilters,
 
         searchCached,
         searchKeyGen,
@@ -436,7 +353,102 @@ export const useStructureSearchApi = <
         checkSearch,
 
         isPageCached,
-        isPaginateCached,
-        watchSearch: watchCurrentSearch
+        isPaginateCached
     };
+};
+
+// ─── useWatchSearch ────────────────────────────────────────────────────────
+
+/**
+ * fetchSearch's reactive counterpart — the React-first equivalent of a Vue
+ * `watch([pageCurrent, pageSize], ...)`. A `useEffect` re-runs the search
+ * whenever the api's `pageCurrent` or `pageSize` changes, reading whatever
+ * filters the api is bound to at that moment. It cleans up on unmount by itself;
+ * there is no stop handle to wire up.
+ *
+ * Filters are READ, not watched: this hook has no opinion on when a filter edit
+ * should trigger a search (as-you-type vs on-submit is a UI decision it must not
+ * make for you). A filter change only takes effect the next time a search runs —
+ * on a page/pageSize change, or via the returned `search()`. For as-you-type,
+ * watch your filters yourself (debounced if desired) and call `search()`.
+ *
+ *     const filters = useState({ q: '' });
+ *     const api = useStructureSearchApi(() => filters[0]);
+ *     const { search } = useWatchSearch(api, (f, page, size) => fetchPage(f, page, size), {
+ *         onSuccess
+ *     });
+ *     // reset to page 1 and search now, even if pageCurrent was already 1:
+ *     const submit = () => { api.setPageCurrent(1); search(true); };
+ *
+ * @param api      - a useStructureSearchApi instance
+ * @param apiCall  - filters/page/pageSize-parametrized fetch
+ * @param settings - immediate (run on mount, default true), onSuccess/onError/onSettled,
+ *                   plus anything forwarded to fetchSearch (forced, merge, TTL, ...)
+ * @returns { search } — trigger a search on demand with the current filters/page/pageSize
+ */
+export const useWatchSearch = <
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    T extends Record<string | number, any> = Record<string, any>,
+    F = object
+>(
+    api: Pick<
+        ReturnType<typeof useStructureSearchApi<T, string | number, string | number, F>>,
+        'fetchSearch' | 'getFilters' | 'pageCurrent' | 'pageSize'
+    >,
+    apiCall: (filters: F, page: number, pageSize: number) => Promise<(T | undefined)[]>,
+    settings: IWatchSearchSettings<T, F> = {}
+): { search: (forced?: boolean) => Promise<(T | undefined)[] | undefined> } => {
+    const { fetchSearch, getFilters, pageCurrent, pageSize } = api;
+    const { immediate = true } = settings;
+
+    // pageCurrent/pageSize are read fresh by search() (which is stable), while the
+    // effect below still keys on their VALUES so a change actually re-triggers it.
+    const pageRef = useRef(pageCurrent);
+    pageRef.current = pageCurrent;
+    const sizeRef = useRef(pageSize);
+    sizeRef.current = pageSize;
+
+    // Latest apiCall/settings without making them effect dependencies: only an
+    // actual page/pageSize change should re-run the search.
+    const latestRef = useRef({ apiCall, settings });
+    latestRef.current = { apiCall, settings };
+
+    const search = useCallback(
+        (forced = false): Promise<(T | undefined)[] | undefined> => {
+            const { apiCall: call, settings: options } = latestRef.current;
+            const { onSuccess, onError, onSettled, ...fetchSettings } = options;
+            const filters = getFilters();
+            const page = pageRef.current;
+            const size = sizeRef.current;
+            return fetchSearch(() => call(filters, page, size), filters, page, size, {
+                ...fetchSettings,
+                forced: forced || fetchSettings.forced
+            })
+                .then((items) => {
+                    onSuccess?.(items, filters);
+                    onSettled?.(items, undefined, filters);
+                    return items;
+                })
+                .catch((error: unknown): undefined => {
+                    onError?.(error, filters);
+                    onSettled?.(undefined, error, filters);
+                    return;
+                });
+        },
+        [fetchSearch, getFilters]
+    );
+
+    // Skip only the very first run when immediate is false; every later
+    // pageCurrent/pageSize change always searches.
+    const firstRunRef = useRef(true);
+    useEffect(() => {
+        if (firstRunRef.current) {
+            firstRunRef.current = false;
+            if (!immediate) return;
+        }
+        void search();
+        // `immediate` is read once, on mount; later renders are page/size changes.
+    }, [pageCurrent, pageSize, search, immediate]);
+
+    return { search };
 };

@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { RefObject } from 'react';
-import { QueryClient } from '@tanstack/query-core';
+import { QueryClient, CancelledError } from '@tanstack/query-core';
 import type { QueryKey } from '@tanstack/query-core';
 import { useStructureDataManagement } from './structureDataManagement';
-import { generateFallbackValue } from '../utils/generateFallbackValue';
+import { getUuid } from '@guebbit/js-toolkit';
 
 // ─── Type helpers ───────────────────────────────────────────────────────
 
@@ -35,9 +34,14 @@ export interface IFetchSettings {
     TTL?: number;
 
     /**
-     * When true (default false) the fetched value is merged into the existing
-     * record instead of replacing it wholesale — use when the response carries
-     * only a subset of the record's fields.
+     * When I don't want to replace the data but merge it instead with the existing one
+     * (replacing only the old fields with the new ones)
+     *
+     * This could happen because different fetches return different fields for the same item.
+     *
+     * Example: a fetch call with a custom lastUpdateKey retrieves a list of items already
+     * held, maybe with a valid TTL. Without merge this would just refresh like a
+     * soft-forced call. With merge the items are updated with the new data instead.
      */
     merge?: boolean;
 
@@ -54,13 +58,26 @@ export interface IFetchSettings {
      * lets a caller keep independent cached "versions" of the same target.
      */
     lastUpdateKey?: string;
+
+    /**
+     * `createTarget`/`updateTarget` only. When true (default) the resulting record
+     * is seeded into the per-item target cache as if it had just been fetched via
+     * `fetchTarget`, so a later `fetchTarget(id)` is a cache hit instead of an extra
+     * request. Turn off when the record should not be treated as freshly fetched.
+     */
+    fetchLike?: boolean;
+
+    /**
+     * `updateTarget` only. When true (default) the request's response is applied as
+     * the record's new data (replace, or merge when `merge` is set). Turn off when
+     * the response is not the full updated item (e.g. a bare acknowledgement): the
+     * optimistic edit is then kept as the record's final state instead of being
+     * overwritten by the response.
+     */
+    fetchAgain?: boolean;
 }
 
-export interface IStructureRestApi<
-    K extends string | number,
-    T,
-    P extends string | number = string | number
-> {
+export interface IStructureRestApi {
     /**
      * Identifier field name (or array, for composite keys) used to key records.
      * Forwarded to {@link useStructureDataManagement}.
@@ -86,9 +103,25 @@ export interface IStructureRestApi<
     TTL?: number;
 
     /**
-     * Critical-mass backstop on the store size: past this many records, the
-     * entire store is wiped and immediately repopulated with the incoming
-     * batch. `0` disables it. Default `100_000`.
+     * Hard upper bound on the item dictionary size. When a fetched batch would push
+     * the dictionary past it, the WHOLE client store is wiped before the batch is
+     * stored (see `resetAll`). 0 disables it.
+     *
+     * This is a critical-mass backstop, NOT a cache policy. Records are never dropped
+     * for being old: stale data is useful data — it keeps the list on screen while the
+     * fresh copy downloads. A record is garbage only when nothing points at it, and age
+     * says nothing about that. So there is no TTL on the dictionary and no eviction tied
+     * to query-cache expiry; the store is thrown away only when it grows absurd.
+     * (`useStructureSearchApi`'s `searchCached` applies the same idea from the other
+     * end: it is capped at MAX_SEARCHES = 50 buckets rather than expired by age.)
+     *
+     * WARNING: a wipe empties `itemList` / `pageItemList` / `selectedRecord`. Harmless
+     * for a server-paginated UI (the incoming batch is stored right after, so the page
+     * being rendered is intact), VISIBLE for an infinite-scroll UI that renders itemList
+     * directly — there the list collapses to the last batch. Set 0 and prune manually
+     * if that matters. At the default 100k (~20MB of plain records) it should never fire.
+     *
+     * Default `100_000`.
      */
     maxRecords?: number;
 
@@ -151,12 +184,12 @@ const asItems = <T>(result: unknown): T[] =>
  * @param settings - Configuration for identifier extraction, caching, relationships
  */
 export const useStructureRestApi = <
-    K extends string | number,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    T extends Record<string | number | symbol, any>,
+    T extends Record<string | number | symbol, any> = Record<string, any>,
+    K extends string | number = Extract<keyof T, string | number>,
     P extends string | number = string | number
 >(
-    settings: IStructureRestApi<K, T, P> = {}
+    settings: IStructureRestApi = {}
 ) => {
     const dataManagement = useStructureDataManagement<T, K, P>(
         settings.identifiers ?? 'id',
@@ -173,18 +206,41 @@ export const useStructureRestApi = <
         deleteRecord,
         resetRecords,
         addToParent,
-        removeDuplicateChildren,
-        setSelectedIdentifier
+        removeDuplicateChildren
     } = dataManagement;
 
     // ─── QueryClient (own or injected) ───────────────────────────────────────
 
     const injectedClient = settings.queryClient;
+    const instanceTtl = settings.TTL ?? 3_600_000;
     const internalClientRef = useRef<QueryClient | null>(null);
+    /**
+     * TanStack QueryClient — freshness, request de-duplication and revalidation engine.
+     * A new instance is created per hook unless an external one is provided.
+     *
+     * OWNERSHIP (do not blur these two):
+     *  - `itemDictionary` owns WHAT TO RENDER: synchronous, reactive, the only thing
+     *    consumers read (getRecord / itemList / ...). Prune it with `resetRecords()`.
+     *  - this cache owns WHEN TO FETCH: is an entry stale, is a request already in
+     *    flight, should it retry. Nothing renders from it.
+     *
+     * An entry garbage-collected after `gcTime` only means "we forgot that this item
+     * was fresh" — the next read refetches it. It must NEVER evict the item from the
+     * dictionary: with no query observers (nothing here calls useQuery) every entry is
+     * gc-eligible from birth, so `gcTime` must outlive the TTL, else an entry could be
+     * collected while still fresh. `networkMode: 'always'` because the queryFn is the
+     * caller's apiCall, not necessarily a network request — never pause it while offline.
+     */
     const queryClient: QueryClient =
         injectedClient ??
         (internalClientRef.current ??= new QueryClient({
-            defaultOptions: { queries: { retry: false, structuralSharing: false } }
+            defaultOptions: {
+                queries: {
+                    retry: false,
+                    gcTime: Math.max(instanceTtl, 5 * 60 * 1000),
+                    networkMode: 'always'
+                }
+            }
         }));
 
     useEffect(
@@ -196,9 +252,8 @@ export const useStructureRestApi = <
 
     // ─── Instance settings ────────────────────────────────────────────────────
 
-    const [fallbackLoadingKey] = useState(generateFallbackValue);
+    const [fallbackLoadingKey] = useState(getUuid);
     const instanceLoadingKey = settings.loadingKey ?? fallbackLoadingKey;
-    const instanceTtl = settings.TTL ?? 3_600_000;
     const maxRecordsLimit = settings.maxRecords ?? 100_000;
     const getEffectiveTtl = useCallback((ttl?: number) => ttl ?? instanceTtl, [instanceTtl]);
 
@@ -239,6 +294,10 @@ export const useStructureRestApi = <
         [instanceLoadingKey]
     );
 
+    /**
+     * Returns true when the TanStack cache entry for the given key is still
+     * within its stale window (i.e. data age < ttl).
+     */
     const isFresh = useCallback(
         (key: QueryKey, ttl: number): boolean => {
             const dataUpdatedAt = queryClient.getQueryState(key)?.dataUpdatedAt;
@@ -319,6 +378,32 @@ export const useStructureRestApi = <
         [ingestMany]
     );
 
+    /**
+     * Public store-writing helper, mirroring the routine the fetch* methods use:
+     * writes each item into the local store (add, or merge fields into the existing
+     * one when `merge` is true), enforcing maxRecords first so the incoming (freshest)
+     * items always survive the wipe. `onSave` runs per stored item for extra
+     * bookkeeping (e.g. seeding the per-item target cache). Skips `undefined` entries
+     * and returns `items` unchanged.
+     *
+     * @param items
+     * @param merge - true: merge fields into the existing record, false: replace
+     * @param onSave - customized single-item operation
+     */
+    const saveRecords = useCallback(
+        (
+            items: (T | undefined)[] = [],
+            merge = false,
+            onSave?: (item: T) => void
+        ): (T | undefined)[] => {
+            const defined = items.filter((item): item is T => !!item);
+            ingestMany(defined, { merge });
+            if (onSave) for (const item of defined) onSave(item);
+            return items;
+        },
+        [ingestMany]
+    );
+
     /** Replace (not merge) the record at `id`, overriding its derived identifier. */
     const replaceRecord = useCallback(
         (data: T, id: K) => {
@@ -329,31 +414,49 @@ export const useStructureRestApi = <
     );
 
     // ─── check* (pre-flight freshness — synchronous, mirrors each fetch*'s key) ─
+    //
+    // "Would this call be served from cache, or would it hit the network?" — answered
+    // synchronously, without calling apiCall or touching loading state. Each check builds
+    // the exact query key its fetch* counterpart uses, so an entry reported fresh here is
+    // the same entry that fetch* would reuse instead of refetching.
+    //
+    // There is no `forced` parameter: a forced call always fetches, so there is nothing
+    // to check. Being synchronous, a check's result only holds until the next microtask
+    // that might mutate the cache (e.g. an awaited fetch elsewhere) — treat it as advisory
+    // for the immediate next call, not as a durable state to hold onto.
 
+    /** Would `fetchTarget(apiCall, id, settings)` be served from cache? */
     const checkTarget = useCallback(
         (id: K, checkSettings: { TTL?: number; lastUpdateKey?: string } = {}): boolean =>
             isFresh(targetKey(id, checkSettings.lastUpdateKey), getEffectiveTtl(checkSettings.TTL)),
         [isFresh, targetKey, getEffectiveTtl]
     );
 
+    /** Would `fetchAll(apiCall, settings)` be served from cache? */
     const checkAll = useCallback(
         (checkSettings: { TTL?: number } = {}): boolean =>
             isFresh(listKey(), getEffectiveTtl(checkSettings.TTL)),
         [isFresh, listKey, getEffectiveTtl]
     );
 
+    /** Would `fetchByParent(apiCall, parentId, settings)` be served from cache? */
     const checkByParent = useCallback(
         (parentId: P, checkSettings: { TTL?: number } = {}): boolean =>
             isFresh(parentKeyFor(parentId), getEffectiveTtl(checkSettings.TTL)),
         [isFresh, parentKeyFor, getEffectiveTtl]
     );
 
+    /**
+     * Would `fetchAny(apiCall, settings)` be served from cache? Without a lastUpdateKey,
+     * fetchAny never caches at all — always false, matching fetchAny's own rule.
+     */
     const checkAny = useCallback(
         (lastUpdateKey?: string, checkSettings: { TTL?: number } = {}): boolean =>
             !!lastUpdateKey && isFresh(anyKey(lastUpdateKey), getEffectiveTtl(checkSettings.TTL)),
         [isFresh, anyKey, getEffectiveTtl]
     );
 
+    /** Would `fetchPaginate(apiCall, page, pageSize, settings)` be served from cache? */
     const checkPaginate = useCallback(
         (
             page: number,
@@ -367,6 +470,12 @@ export const useStructureRestApi = <
         [isFresh, paginateKey, getEffectiveTtl]
     );
 
+    /**
+     * Would `fetchMultiple(apiCall, ids, settings)` skip the network for some, all, or
+     * none of the given ids? Mirrors fetchMultiple's own per-id split: cachedIds would
+     * be served without a request, expiredIds would trigger the one batched apiCall
+     * fetchMultiple makes to cover all of them.
+     */
     const checkMultiple = useCallback(
         (ids: K[], checkSettings: { TTL?: number } = {}): { cachedIds: K[]; expiredIds: K[] } => {
             const cachedIds: K[] = [];
@@ -380,6 +489,14 @@ export const useStructureRestApi = <
 
     // ─── fetch* methods ───────────────────────────────────────────────────────
 
+    /**
+     * Generic fetch for all types of requests.
+     * Just for loading management and optional TanStack-backed caching.
+     * When no lastUpdateKey is supplied the call is always executed without caching.
+     *
+     * @param apiCall - call that we are going to make
+     * @param fetchSettings - forced, loading, lastUpdateKey, loadingKey, TTL
+     */
     const fetchAny = useCallback(
         async <R = unknown>(
             apiCall: () => Promise<R>,
@@ -408,6 +525,17 @@ export const useStructureRestApi = <
         [queryClient, anyKey, getEffectiveTtl, startLoading, stopLoading]
     );
 
+    /**
+     * Get ALL items from server.
+     * Uses TanStack QueryClient for caching and freshness (staleTime = TTL).
+     * When the cache is still fresh the apiCall is skipped entirely.
+     *
+     * @param apiCall
+     * @param fetchSettings - forced (bypass cache), loading, merge, lastUpdateKey
+     *                        (appended to the query key to namespace independent
+     *                        cache entries), loadingKey, mismatch, TTL (per-call
+     *                        staleTime override)
+     */
     const fetchAll = useCallback(
         async <R = (T | undefined)[]>(
             apiCall: () => Promise<R>,
@@ -449,6 +577,14 @@ export const useStructureRestApi = <
         ]
     );
 
+    /**
+     * Same as fetchAll, but with a parent identifier (belongsTo relationship).
+     *
+     * @param apiCall
+     * @param parentId - identifier of parent
+     *                   WARNING: in case of multiple identifiers, createIdentifier(id) must be used!
+     * @param fetchSettings - forced, loading, merge, mismatch, TTL (per-call staleTime override)
+     */
     const fetchByParent = useCallback(
         async <R = (T | undefined)[]>(
             apiCall: () => Promise<R>,
@@ -497,6 +633,16 @@ export const useStructureRestApi = <
         ]
     );
 
+    /**
+     * Get target item from server.
+     * Per-item freshness is tracked via the TanStack query key [instanceLoadingKey,
+     * 'target', id, lastUpdateKey]. Shared by `fetchTarget` and `watchTarget`.
+     *
+     * @param apiCall
+     * @param id - can be undefined if we don't know yet the id (always executes, uncached)
+     *             WARNING: in case of multiple identifiers, createIdentifier(id) must be used!
+     * @param fetchSettings - forced, loading, merge, lastUpdateKey, loadingKey, mismatch, TTL
+     */
     const runFetchTarget = useCallback(
         async <R = T>(
             apiCall: () => Promise<R>,
@@ -514,16 +660,32 @@ export const useStructureRestApi = <
             } = fetchSettings;
             if (showLoading) startLoading(loadingKey);
             try {
-                const result =
-                    id === undefined
-                        ? await apiCall()
-                        : fromSafeResult<R>(
-                              await queryClient.fetchQuery({
-                                  queryKey: targetKey(id, lastUpdateKey),
-                                  queryFn: toSafeQueryFunction(apiCall),
-                                  staleTime: forced ? 0 : getEffectiveTtl(callTtl)
-                              })
-                          );
+                let result: R;
+                if (id === undefined) {
+                    result = await apiCall();
+                } else {
+                    try {
+                        result = fromSafeResult<R>(
+                            await queryClient.fetchQuery({
+                                queryKey: targetKey(id, lastUpdateKey),
+                                queryFn: toSafeQueryFunction(apiCall),
+                                staleTime: forced ? 0 : getEffectiveTtl(callTtl)
+                            })
+                        );
+                    } catch (error: unknown) {
+                        // A concurrent updateTarget/deleteTarget cancels this in-flight
+                        // fetch to apply its own newer value first. That is NOT a failure:
+                        // the caller just gets whatever is currently cached (their own
+                        // optimistic edit already won) instead of an error. Any other
+                        // error is a real failure and propagates.
+                        if (!(error instanceof CancelledError)) throw error;
+                        result = fromSafeResult<R>(
+                            queryClient.getQueryData(targetKey(id, lastUpdateKey)) as
+                                | R
+                                | typeof UNDEFINED_RESULT
+                        );
+                    }
+                }
 
                 if (result !== undefined) {
                     ingestOne(result as unknown as T, { merge });
@@ -563,6 +725,16 @@ export const useStructureRestApi = <
         [runFetchTarget]
     );
 
+    /**
+     * Fetch multiple items by id, batching only the ones that are stale.
+     * Items with a fresh TanStack cache entry are returned immediately without
+     * hitting the network; expired items are requested via a single apiCall.
+     *
+     * @param apiCall
+     * @param ids - Array of ids
+     *              WARNING: in case of multiple identifiers, createIdentifier(id) must be used!
+     * @param fetchSettings - forced, loading, loadingKey, TTL (per-call staleTime override)
+     */
     const fetchMultiple = useCallback(
         async (
             apiCall: (ids: K[]) => Promise<(T | undefined)[]>,
@@ -600,6 +772,18 @@ export const useStructureRestApi = <
         ]
     );
 
+    /**
+     * fetchAll, one server-paginated page at a time. This is a generic paginated
+     * fetch, not a search — apiCall resolves with plain items. A caller that also
+     * needs a server-reported total (e.g. useStructureSearchApi.fetchSearch) reads
+     * it out of its own apiCall wrapper; this hook has nothing to do with it.
+     *
+     * @param apiCall
+     * @param page
+     * @param pageSize - page size used for caching
+     * @param fetchSettings - forced, loading, merge, lastUpdateKey (namespaces independent
+     *                        cache buckets, e.g. per filter set), loadingKey, mismatch, TTL
+     */
     const fetchPaginate = useCallback(
         async <R = (T | undefined)[]>(
             apiCall: () => Promise<R>,
@@ -643,66 +827,50 @@ export const useStructureRestApi = <
         ]
     );
 
-    // ─── watchTarget — polls a mutable id source, since a React ref (unlike a
-    // Vue ref) is not itself reactive and cannot be a useEffect dependency ────
-
-    const watchTarget = useCallback(
-        <R = T>(
-            idSource: RefObject<K | undefined>,
-            apiCall: (id: K) => Promise<R>,
-            watchSettings: IWatchTargetSettings<R> = {}
-        ): (() => void) => {
-            const { onSuccess, onError, onSettled, ...fetchSettings } = watchSettings;
-            const effectiveTtl = getEffectiveTtl(fetchSettings.TTL);
-
-            let lastId = idSource.current;
-
-            const run = (id: K) => {
-                runFetchTarget(() => apiCall(id), id, fetchSettings)
-                    .then((item) => {
-                        onSuccess?.(item, id);
-                        onSettled?.(item, undefined, id);
-                    })
-                    .catch((error: unknown) => {
-                        onError?.(error, id);
-                        onSettled?.(undefined, error, id);
-                    });
-            };
-
-            if (lastId !== undefined && lastId !== null) {
-                setSelectedIdentifier(lastId);
-                run(lastId);
-            }
-
-            const interval = setInterval(
-                () => {
-                    const currentId = idSource.current;
-                    if (currentId === undefined || currentId === null) return;
-                    if (currentId !== lastId) {
-                        lastId = currentId;
-                        setSelectedIdentifier(currentId);
-                        run(currentId);
-                        return;
-                    }
-                    if (!isFresh(targetKey(currentId), effectiveTtl)) run(currentId);
-                },
-                Math.max(50, effectiveTtl / 2)
-            );
-
-            return () => clearInterval(interval);
-        },
-        [runFetchTarget, isFresh, targetKey, getEffectiveTtl]
-    );
-
     // ─── CRUD mutations with optimistic updates ───────────────────────────────
 
+    /**
+     * Mark every 'list' / 'paginate' / 'parent' query of this hook as stale.
+     *
+     * There are no live query observers here (nothing calls useQuery), so this only
+     * flips each entry's isInvalidated flag — it does NOT trigger a request by itself.
+     * The next explicit fetchAll/fetchPaginate/fetchByParent is what actually refetches,
+     * via fetchQuery picking up the invalidated flag.
+     *
+     * Called after createTarget/deleteTarget succeed: a created or deleted record
+     * changes what a list-shaped fetch should return, even though the record's own
+     * data is already correct in itemDictionary/target cache regardless.
+     */
+    const invalidateListQueries = useCallback(() => {
+        // Fire-and-forget: with no live observers this only flips the invalidated
+        // flag synchronously; the returned promise settles once refetches (there are
+        // none) complete, so there is nothing to await.
+        void queryClient.invalidateQueries({
+            predicate: (query) => {
+                const [lk, kind] = query.queryKey as [string, string];
+                return (
+                    lk === instanceLoadingKey &&
+                    (kind === 'list' || kind === 'paginate' || kind === 'parent')
+                );
+            }
+        });
+    }, [queryClient, instanceLoadingKey]);
+
+    /**
+     * dummyData: Create data immediately and then update it later
+     * when the server returns the real data
+     *
+     * @param apiCall
+     * @param dummyData
+     * @param fetchSettings - loading, loadingKey, fetchLike (seed the target cache, default true)
+     */
     const createTarget = useCallback(
         async <R = T>(
             apiCall: () => Promise<R>,
             dummyData?: Partial<T>,
             fetchSettings: IFetchSettings = {}
         ): Promise<R> => {
-            const { loading: showLoading = true, loadingKey } = fetchSettings;
+            const { loading: showLoading = true, loadingKey, fetchLike = true } = fetchSettings;
 
             const dummyId = dummyData === undefined ? undefined : createIdentifier(dummyData as T);
             if (dummyData !== undefined) ingestOne(dummyData as T);
@@ -714,7 +882,9 @@ export const useStructureRestApi = <
                 if (result !== undefined) {
                     const id = createIdentifier(result as unknown as T);
                     ingestOne(result as unknown as T);
-                    seedTarget(id, result as unknown as T);
+                    if (fetchLike) seedTarget(id, result as unknown as T);
+                    // A new record can belong in cached lists that don't know about it yet
+                    invalidateListQueries();
                 }
                 return result;
             } catch (error: unknown) {
@@ -724,9 +894,27 @@ export const useStructureRestApi = <
                 if (showLoading) stopLoading(loadingKey);
             }
         },
-        [createIdentifier, ingestOne, deleteRecord, seedTarget, startLoading, stopLoading]
+        [
+            createIdentifier,
+            ingestOne,
+            deleteRecord,
+            seedTarget,
+            invalidateListQueries,
+            startLoading,
+            stopLoading
+        ]
     );
 
+    /**
+     * Update an existing record
+     *
+     * @param apiCall
+     * @param itemData
+     * @param id - WARNING: in case of multiple identifiers, createIdentifier(id) must be used!
+     * @param fetchSettings - loading, merge, loadingKey, fetchLike (seed the target cache,
+     *                        default true), fetchAgain (apply the response as the record's
+     *                        new data, default true)
+     */
     const updateTarget = useCallback(
         async <R = T>(
             apiCall: () => Promise<R>,
@@ -734,22 +922,40 @@ export const useStructureRestApi = <
             id: K,
             fetchSettings: IFetchSettings = {}
         ): Promise<R> => {
-            const { loading: showLoading = true, loadingKey, merge = false } = fetchSettings;
+            const {
+                loading: showLoading = true,
+                loadingKey,
+                merge = false,
+                fetchLike = true,
+                fetchAgain = true
+            } = fetchSettings;
 
             const rollbackSnapshot = getRecord(id);
             const optimisticRecord = { ...rollbackSnapshot, ...itemData } as T;
+
+            // Cancel any in-flight fetchTarget for this id (all lastUpdateKey buckets)
+            // BEFORE the optimistic edit: otherwise an older response could resolve
+            // afterwards and clobber it with pre-update data. Mirrors TanStack's
+            // optimistic-update recipe (cancelQueries before the optimistic write).
+            await queryClient.cancelQueries({ queryKey: [instanceLoadingKey, 'target', id] });
+
             editRecord(itemData, id);
 
             if (showLoading) startLoading(loadingKey);
             try {
                 const result = await apiCall();
                 if (result !== undefined) {
-                    const finalRecord = merge
-                        ? ({ ...optimisticRecord, ...result } as T)
-                        : (result as unknown as T);
-                    if (merge) editRecord(result as Partial<T>, id);
-                    else replaceRecord(finalRecord, id);
-                    seedTarget(id, finalRecord);
+                    // fetchAgain=false: the response isn't the full item (e.g. a bare
+                    // acknowledgement), so keep the optimistic edit as the final record.
+                    let finalRecord = optimisticRecord;
+                    if (fetchAgain) {
+                        finalRecord = merge
+                            ? ({ ...optimisticRecord, ...result } as T)
+                            : (result as unknown as T);
+                        if (merge) editRecord(result as Partial<T>, id);
+                        else replaceRecord(finalRecord, id);
+                    }
+                    if (fetchLike) seedTarget(id, finalRecord);
                 }
                 return result;
             } catch (error: unknown) {
@@ -763,9 +969,24 @@ export const useStructureRestApi = <
                 if (showLoading) stopLoading(loadingKey);
             }
         },
-        [getRecord, editRecord, replaceRecord, deleteRecord, seedTarget, startLoading, stopLoading]
+        [
+            getRecord,
+            editRecord,
+            replaceRecord,
+            deleteRecord,
+            seedTarget,
+            queryClient,
+            instanceLoadingKey,
+            startLoading,
+            stopLoading
+        ]
     );
 
+    /**
+     * @param apiCall
+     * @param id - WARNING: in case of multiple identifiers, createIdentifier(id) must be used!
+     * @param fetchSettings - loading, loadingKey
+     */
     const deleteTarget = useCallback(
         async <R = unknown>(
             apiCall: () => Promise<R>,
@@ -775,12 +996,20 @@ export const useStructureRestApi = <
             const { loading: showLoading = true, loadingKey } = fetchSettings;
             const rollbackSnapshot = getRecord(id);
 
+            // Cancel any in-flight fetchTarget for this id first, same reasoning as
+            // updateTarget: an older response resolving after the delete below would
+            // re-add stale data.
+            await queryClient.cancelQueries({ queryKey: [instanceLoadingKey, 'target', id] });
+
             deleteRecord(id);
             queryClient.removeQueries({ queryKey: [instanceLoadingKey, 'target', id] });
 
             if (showLoading) startLoading(loadingKey);
             try {
-                return await apiCall();
+                const result = await apiCall();
+                // Cached lists may still list this id; make them refetch next time
+                invalidateListQueries();
+                return result;
             } catch (error: unknown) {
                 if (rollbackSnapshot !== undefined) addRecord(rollbackSnapshot);
                 throw error;
@@ -794,6 +1023,7 @@ export const useStructureRestApi = <
             queryClient,
             instanceLoadingKey,
             addRecord,
+            invalidateListQueries,
             startLoading,
             stopLoading
         ]
@@ -801,11 +1031,35 @@ export const useStructureRestApi = <
 
     // ─── Lifecycle ────────────────────────────────────────────────────────────
 
+    /**
+     * Wipe the client store's records and this hook's ref-counted loading state.
+     *
+     * Does not touch the TanStack cache: its entries stay valid and a later fetch
+     * repopulates the dictionary from them without hitting the network.
+     *
+     * NOTE for callers layering their own id-indexed bookkeeping on top of this
+     * hook (e.g. useStructureSearchApi's searchCached): dropping records here
+     * leaves THEIR ids dangling, and getRecords() silently filters those out. If you
+     * built a searchApi on top of this instance, also call its resetSearches() when
+     * you call this (or destroy()).
+     */
     const resetAll = useCallback(() => {
         resetRecords();
         resetLoading();
     }, [resetRecords, resetLoading]);
 
+    /**
+     * Tear down this hook: for a client this hook created, clear it (removing every
+     * query and cancelling the background gc timers) so nothing leaks after the
+     * owner is gone. Also resets the item dictionary and loading state, since their
+     * lifetime is meant to track this hook's usage.
+     *
+     * Not called automatically on unmount (only the internally-created QueryClient
+     * itself is, via the effect above) — call `destroy()` yourself, typically from
+     * your own `useEffect` cleanup, when you want a full manual teardown.
+     *
+     * @param forced - also clear an externally-provided queryClient (normally left alone)
+     */
     const destroy = useCallback(
         (forced = false) => {
             resetRecords();
@@ -841,6 +1095,9 @@ export const useStructureRestApi = <
         startLoading,
         stopLoading,
 
+        // store writes
+        saveRecords,
+
         // fetch
         fetchAny,
         fetchAll,
@@ -848,7 +1105,6 @@ export const useStructureRestApi = <
         fetchTarget,
         fetchMultiple,
         fetchPaginate,
-        watchTarget,
 
         // mutate
         createTarget,
@@ -863,4 +1119,75 @@ export const useStructureRestApi = <
         checkPaginate,
         checkMultiple
     };
+};
+
+// ─── useWatchTarget ────────────────────────────────────────────────────────
+
+/**
+ * fetchTarget's reactive counterpart — the React-first equivalent of a Vue
+ * `watch(idSource, ...)`. Give it the CURRENT id VALUE (state or prop, NOT a ref):
+ * a `useEffect` keyed on that id re-runs `fetchTarget` the instant it changes,
+ * selecting the record as it goes. This is why it is a hook, not a method on the
+ * api object: only a value React re-renders on can drive a `useEffect`, whereas a
+ * mutable ref would force polling to notice changes.
+ *
+ * A nullish id is a no-op. onSuccess/onError/onSettled fire with the item/error and
+ * id; a change (or unmount) mid-flight suppresses the previous run's late callbacks.
+ *
+ *     const [userId, setUserId] = useState<number>();
+ *     const api = useStructureRestApi<IUser, number>({ identifiers: 'id' });
+ *     useWatchTarget(api, userId, (id) => fetchUser(id), { onSuccess });
+ *
+ * @param api      - a useStructureRestApi instance (for fetchTarget + setSelectedIdentifier)
+ * @param id       - the id to fetch/select; the effect re-runs whenever it changes
+ * @param apiCall  - id-parametrized fetch
+ * @param settings - forwarded to fetchTarget (forced, loading, merge, TTL, ...), plus
+ *                   onSuccess/onError/onSettled lifecycle callbacks
+ */
+export const useWatchTarget = <
+    K extends string | number,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    T extends Record<string | number | symbol, any> = Record<string, any>,
+    R = T
+>(
+    api: Pick<
+        ReturnType<typeof useStructureRestApi<T, K>>,
+        'fetchTarget' | 'setSelectedIdentifier'
+    >,
+    id: K | undefined | null,
+    apiCall: (id: K) => Promise<R>,
+    settings: IWatchTargetSettings<R> = {}
+): void => {
+    const { fetchTarget, setSelectedIdentifier } = api;
+
+    // Latest apiCall/settings without making them effect dependencies: only an
+    // actual id change (or a new api instance) should re-run the fetch.
+    const latestRef = useRef({ apiCall, settings });
+    latestRef.current = { apiCall, settings };
+
+    useEffect(() => {
+        if (id === undefined || id === null) return;
+        setSelectedIdentifier(id);
+
+        let cancelled = false;
+        const { apiCall: call, settings: options } = latestRef.current;
+        const { onSuccess, onError, onSettled, ...fetchSettings } = options;
+
+        fetchTarget<R>(() => call(id), id, fetchSettings)
+            .then((item) => {
+                if (cancelled) return;
+                onSuccess?.(item, id);
+                onSettled?.(item, undefined, id);
+            })
+            .catch((error: unknown) => {
+                if (cancelled) return;
+                onError?.(error, id);
+                onSettled?.(undefined, error, id);
+            });
+
+        // A newer id (or unmount) suppresses this run's late-arriving callbacks.
+        return () => {
+            cancelled = true;
+        };
+    }, [id, fetchTarget, setSelectedIdentifier]);
 };

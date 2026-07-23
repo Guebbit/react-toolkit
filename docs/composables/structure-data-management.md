@@ -88,13 +88,6 @@ For child records that need to remember which parent they belong to:
 | `getRecordsByParent(parentId?)`        | Resolves a parent's child ids into a `Record<K, T>` of full records. |
 | `getListByParent(parentId?)`           | Same, as an array.                                                    |
 
-### Standalone export
-
-`generateFallbackValue()` — not part of the composable's return value, exported separately.
-Generates a random id (`crypto.randomUUID()` when available, else a `Date.now()`-based fallback
-for environments without `crypto`). Used internally to fill missing identifiers, and reused by
-`useNotificationsStore` for toast ids.
-
 ## Gotchas
 
 - **Identifier changes don't rekey the dictionary.** If a partial `editRecord` call changes a
