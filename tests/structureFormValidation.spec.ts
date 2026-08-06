@@ -14,6 +14,15 @@ const loginSchema = z.object({
 
 const INITIAL_LOGIN: ILoginForm = { email: '', password: '' };
 
+/**
+ * A login schema whose email message is a thunk, so the wording is decided at parse time.
+ */
+const localizedSchema = (message: () => string) =>
+    z.object({
+        email: z.string().email({ error: message }),
+        password: z.string()
+    });
+
 describe('useStructureFormValidation', () => {
     // ─── form reactive state ──────────────────────────────────────────────
 
@@ -506,6 +515,130 @@ describe('useStructureFormValidation', () => {
                 validPass = result.current.validate();
             });
             expect(validPass).toBe(true);
+        });
+    });
+
+    // ─── revalidateOn ─────────────────────────────────────────────────────
+
+    /**
+     * `formErrors` holds resolved strings, so nothing about the schema can re-translate an error
+     * already on screen — only re-running `validate()` can. These cover the three behaviours that
+     * matter: it must re-run when there is something to re-translate, must NOT run on mount, and
+     * must NOT run for a form with nothing on display.
+     */
+    describe('revalidateOn', () => {
+        it('re-translates displayed errors when the dependency changes', () => {
+            const messages: Record<string, string> = {
+                en: 'Invalid email address',
+                it: 'Indirizzo email non valido'
+            };
+            let locale = 'en';
+
+            const { result, rerender } = renderHook(() =>
+                useStructureFormValidation<ILoginForm>(
+                    INITIAL_LOGIN,
+                    localizedSchema(() => messages[locale] ?? ''),
+                    { revalidateOn: [locale] }
+                )
+            );
+
+            act(() => {
+                result.current.validate();
+            });
+            expect(result.current.formErrors.email).toContain('Invalid email address');
+
+            locale = 'it';
+            rerender();
+
+            expect(result.current.formErrors.email).toContain('Indirizzo email non valido');
+        });
+
+        it('does not validate on mount', () => {
+            const { result } = renderHook(() =>
+                useStructureFormValidation<ILoginForm>(INITIAL_LOGIN, loginSchema, {
+                    revalidateOn: ['en']
+                })
+            );
+
+            // `useEffect` runs on mount and Vue's `watch` does not; without the mount skip this
+            // would surface errors on a form the user has not touched.
+            expect(result.current.formErrors).toEqual({});
+            expect(result.current.isValid).toBe(true);
+        });
+
+        it('leaves a pristine form pristine when the dependency changes', () => {
+            let locale = 'en';
+            const { result, rerender } = renderHook(() =>
+                useStructureFormValidation<ILoginForm>(INITIAL_LOGIN, loginSchema, {
+                    revalidateOn: [locale]
+                })
+            );
+
+            locale = 'it';
+            rerender();
+
+            expect(result.current.formErrors).toEqual({});
+        });
+
+        it('does nothing to a form that validated cleanly', () => {
+            let locale = 'en';
+            const { result, rerender } = renderHook(() =>
+                useStructureFormValidation<ILoginForm>(INITIAL_LOGIN, loginSchema, {
+                    revalidateOn: [locale]
+                })
+            );
+
+            act(() => {
+                result.current.setForm({ email: 'valid@test.com', password: 'validPassword' });
+            });
+            act(() => {
+                expect(result.current.validate()).toBe(true);
+            });
+
+            locale = 'it';
+            rerender();
+
+            expect(result.current.formErrors).toEqual({});
+        });
+
+        it('is inert when no dependency list is given', () => {
+            let locale = 'en';
+            const { result, rerender } = renderHook(() =>
+                useStructureFormValidation<ILoginForm>(INITIAL_LOGIN, loginSchema)
+            );
+
+            act(() => {
+                result.current.validate();
+            });
+            const before = { ...result.current.formErrors };
+
+            locale = 'it';
+            rerender();
+
+            expect(locale).toBe('it');
+            expect(result.current.formErrors).toEqual(before);
+        });
+
+        it('resolves a schema whose messages are thunks just as late as a factory', () => {
+            let currentMessage = 'Invalid email address (en)';
+            const { result } = renderHook(() =>
+                useStructureFormValidation<ILoginForm>(
+                    INITIAL_LOGIN,
+                    // built ONCE — only the message is deferred
+                    localizedSchema(() => currentMessage)
+                )
+            );
+
+            act(() => {
+                result.current.validate();
+            });
+            expect(result.current.formErrors.email).toContain('Invalid email address (en)');
+
+            currentMessage = 'Indirizzo email non valido (it)';
+            act(() => {
+                result.current.validate();
+            });
+            expect(result.current.formErrors.email).toContain('Indirizzo email non valido (it)');
         });
     });
 

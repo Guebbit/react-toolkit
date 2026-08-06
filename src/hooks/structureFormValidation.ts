@@ -1,23 +1,53 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { type ZodType } from 'zod';
+
+/**
+ * Options for {@link useStructureFormValidation}.
+ */
+export interface IStructureFormValidationOptions {
+    /**
+     * Dependency list that, when it changes, re-runs validation over the UNCHANGED form data.
+     *
+     * The case this exists for is a language switch. Zod hands back resolved message *strings*,
+     * and {@link useStructureFormValidation} copies them into `formErrors`, so once `validate()`
+     * has returned those strings are inert text: the schema is out of the picture and
+     * re-rendering just re-prints the same English error under a now-Italian label. Re-parsing
+     * the same data produces the same set of errors with different strings.
+     *
+     * Deliberately a plain dependency array rather than a `locale` option: the toolkit must not
+     * know that any particular i18n library exists, and "re-validate when X changes" covers other
+     * reasons too (a unit system, a tenant's rules). Pass `[i18n.language]` and you have the i18n
+     * behaviour.
+     *
+     * Follows React's own dependency-array rules: keep its length constant across renders.
+     *
+     * Only fires for a form that has errors on display, and never on mount. A pristine form the
+     * user has not submitted yet must not sprout red text just because they changed the language.
+     */
+    revalidateOn?: unknown[];
+}
 
 /**
  * Form management custom hook.
  * Handles reactive form state, optional Zod schema validation and submission flow.
  *
  * @param initialData - Initial values for the form fields
- * @param schema      - Optional Zod schema used for validation, or a factory
- *                      returning one (e.g. `() => createUsersSchema(t)`). Use
- *                      the factory form when the schema's messages depend on
- *                      i18n, so a language change is picked up on the next
- *                      validate() instead of being frozen at hook-creation time.
+ * @param schema      - Optional Zod schema used for validation, or a factory returning one.
+ *                      `schema` is resolved inside `validate()` and nowhere else, so a plain
+ *                      schema whose messages are thunks (`error: () => t('…')`) is resolved just
+ *                      as late as a factory would be — prefer the plain schema, since a factory
+ *                      that is accidentally called at the call site (`createSchema(t)` instead of
+ *                      `() => createSchema(t)`) type-checks, runs, and silently freezes the
+ *                      language.
+ * @param options     - See {@link IStructureFormValidationOptions}
  */
 export const useStructureFormValidation = <
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     T extends Record<string, any> = Record<string, any>
 >(
     initialData: T = {} as T,
-    schema?: ZodType<T> | (() => ZodType<T>)
+    schema?: ZodType<T> | (() => ZodType<T>),
+    options: IStructureFormValidationOptions = {}
 ) => {
     /**
      * Baseline values resetForm() restores and isDirty compares against.
@@ -220,6 +250,38 @@ export const useStructureFormValidation = <
         setFormState(next);
         setFormErrors({});
     }, []);
+
+    /**
+     * Re-translate what is already on screen — see {@link IStructureFormValidationOptions}.
+     *
+     * `validate()` is deterministic on the current form value, so re-running it against unchanged
+     * data yields the same set of errors with freshly-resolved messages.
+     *
+     * Two guards, and both are load-bearing. The mount skip is what makes this behave like a
+     * change listener rather than an extra validate on first render — `useEffect` runs on mount
+     * and Vue's `watch` does not, and running here would validate a form the user has not touched.
+     * The `formErrors` check is the same protection one render later: with nothing on display
+     * there is nothing to re-translate, and running anyway would splash red onto a pristine form.
+     *
+     * `formErrors` is read through a ref rather than listed as a dependency, so this fires ONLY
+     * for the caller's sources — adding `formErrors` would re-run it every time validation
+     * changed anything, which is a loop.
+     */
+    const formErrorsRef = useRef(formErrors);
+    formErrorsRef.current = formErrors;
+
+    const hasMountedRef = useRef(false);
+    const { revalidateOn } = options;
+
+    useEffect(() => {
+        if (!hasMountedRef.current) {
+            hasMountedRef.current = true;
+            return;
+        }
+        if (Object.keys(formErrorsRef.current).length > 0) validate();
+        // The dependency list is the caller's `revalidateOn`, deliberately — `validate` is not
+        // in it, or a schema rebuilt each render would re-fire this on every render.
+    }, revalidateOn ?? []);
 
     return {
         form,
