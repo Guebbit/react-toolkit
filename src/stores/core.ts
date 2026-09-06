@@ -5,14 +5,14 @@ interface ICoreState {
      * This loading must be accessed from anywhere.
      * Components, guards and so on.
      */
-    loadings: Record<string | symbol, boolean>;
+    loadings: Record<string, boolean>;
 }
 
 interface ICoreActions {
-    setLoading: (key?: string | symbol, value?: boolean) => void;
+    setLoading: (key?: string, value?: boolean) => void;
     resetLoadings: () => void;
-    getLoading: (key?: string | symbol) => boolean;
-    isLoading: () => boolean;
+    getLoading: (key?: string) => boolean;
+    isLoading: (prefixes?: string[]) => boolean;
 }
 
 export const useCoreStore = create<ICoreState & ICoreActions>((set, get) => ({
@@ -43,7 +43,18 @@ export const useCoreStore = create<ICoreState & ICoreActions>((set, get) => ({
     getLoading: (key = '') => !!get().loadings[key],
 
     /**
-     * Check if there are any loadings
+     * Check if anything is loading.
+     *
+     * Prefixes scope the question: keys are namespaced by their owner ('accountProfile') and
+     * their action ('accountProfile:avatar-upload'), so a caller asks about one module, one
+     * screen or one button instead of the whole app. No prefixes: any key at all.
+     *
+     * @param prefixes
      */
-    isLoading: () => Object.values(get().loadings).some(Boolean)
+    isLoading: (prefixes = []) =>
+        Object.entries(get().loadings).some(
+            ([key, value]) =>
+                value &&
+                (prefixes.length === 0 || prefixes.some((prefix) => key.startsWith(prefix)))
+        )
 }));

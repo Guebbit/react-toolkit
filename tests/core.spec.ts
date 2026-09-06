@@ -40,4 +40,33 @@ describe('useCoreStore', () => {
         state.setLoading('b', false);
         expect(useCoreStore.getState().isLoading()).toBe(true);
     });
+
+    it('ignores active keys outside the given prefixes', () => {
+        useCoreStore.getState().setLoading('cart', true);
+        expect(useCoreStore.getState().isLoading(['accountProfile'])).toBe(false);
+        expect(useCoreStore.getState().isLoading(['cart'])).toBe(true);
+    });
+
+    it('matches every key under a prefix, action postfixes included', () => {
+        useCoreStore.getState().setLoading('accountProfile:avatar-upload', true);
+        expect(useCoreStore.getState().isLoading(['account'])).toBe(true);
+        expect(useCoreStore.getState().isLoading(['accountProfile:avatar-upload'])).toBe(true);
+        expect(useCoreStore.getState().isLoading(['accountProfile:avatar-remove'])).toBe(false);
+    });
+
+    it('accepts several prefixes, any of which is enough', () => {
+        useCoreStore.getState().setLoading('orders', true);
+        expect(useCoreStore.getState().isLoading(['cart', 'orders'])).toBe(true);
+        expect(useCoreStore.getState().isLoading(['cart', 'wishlist'])).toBe(false);
+    });
+
+    it('answers false for a prefix whose only key is inactive', () => {
+        useCoreStore.getState().setLoading('cart', false);
+        expect(useCoreStore.getState().isLoading(['cart'])).toBe(false);
+    });
+
+    it('matches a prefix only from the start of the key', () => {
+        useCoreStore.getState().setLoading('my-account', true);
+        expect(useCoreStore.getState().isLoading(['account'])).toBe(false);
+    });
 });
