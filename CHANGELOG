@@ -1,3 +1,8 @@
+# 4.0.0
+
+## Changed
+- **BREAKING** — `useCoreStore`'s `isLoading` takes optional key prefixes: `isLoading()` keeps the old "is anything loading at all" answer, `isLoading(['account', 'cart'])` answers only for the keys starting with one of those. The old form collapsed an already-granular dictionary back to one bit before any UI saw it, so a background poll lit the same indicator as a user's save. Read it through a selector (`useCoreStore((state) => state.isLoading(['account']))`), which returns a boolean and so re-renders on the answer rather than on every unrelated key. `loadings` also drops its `symbol` half, which `Object.entries` never returned anyway.
+
 # 2.2.0
 
 ## Added

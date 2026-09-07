@@ -1,6 +1,6 @@
 {
     "name": "@guebbit/react-toolkit",
-    "version": "2.2.0",
+    "version": "4.0.0",
     "license": "AGPLv3.0",
     "type": "module",
     "main": "dist/index.js",
