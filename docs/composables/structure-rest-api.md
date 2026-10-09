@@ -152,5 +152,13 @@ Every fetch/mutate method accepts a trailing settings object (`IFetchSettings`):
   whole flight of the refetch.
 - **`mismatch: true`** when a fetch call returns partial fields (e.g. a list endpoint that omits
   some detail-only fields) that shouldn't overwrite a fuller cached record's freshness.
+- **`useWatchTarget` selects, `fetchTarget` does not.** `useWatchTarget` sets
+  `selectedIdentifier` before each fetch, because it is bound to a screen's id: whatever it is
+  watching _is_ the current record. `fetchTarget` is the imperative primitive and only stores —
+  loading a record is not the same as putting it on screen, and a prefetch or a background refresh
+  must not steal the selection from what the user is looking at. Call `setSelectedIdentifier`
+  yourself when you do want it, or use
+  [`useStructureCrudApi`](./structure-crud-api)'s `fetchOne`, which does exactly that (and undoes
+  it if the fetch fails).
 - **`destroy()`** is explicit in React. If you create a long-lived instance outside normal component
   teardown, call `destroy()` yourself in your cleanup path.

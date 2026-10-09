@@ -1,6 +1,10 @@
 import { renderHook, act } from '@testing-library/react';
 import { z } from 'zod';
-import { useStructureFormValidation } from '../src/hooks/structureFormValidation';
+import {
+    useStructureFormValidation,
+    type IFieldContainer,
+    type IStructureFormValidationOptions
+} from '../src/hooks/structureFormValidation';
 
 interface ILoginForm {
     email: string;
@@ -15,6 +19,25 @@ const loginSchema = z.object({
 const INITIAL_LOGIN: ILoginForm = { email: '', password: '' };
 
 /**
+ * Stand-in for the form element: the hook only ever asks it for a descendant and tries to focus
+ * what comes back, so a container and a field are all a test needs.
+ */
+const createForm = (field?: unknown) => ({
+    querySelector: jest.fn().mockReturnValue(field)
+});
+
+/**
+ * The hook under the default login schema, returned as the live `result` so every assertion
+ * reads through the latest render.
+ */
+const makeForm = (options: IStructureFormValidationOptions<ILoginForm> = {}) => {
+    const { result } = renderHook(() =>
+        useStructureFormValidation<ILoginForm>(INITIAL_LOGIN, loginSchema, options)
+    );
+    return result;
+};
+
+/**
  * A login schema whose email message is a thunk, so the wording is decided at parse time.
  */
 const localizedSchema = (message: () => string) =>
@@ -22,6 +45,19 @@ const localizedSchema = (message: () => string) =>
         email: z.string().email({ error: message }),
         password: z.string()
     });
+
+/** Applies a rejection through act() and hands back what it returned. */
+const apply = (
+    form: ReturnType<typeof makeForm>,
+    error: unknown,
+    options?: Parameters<typeof form.current.applyServerErrors>[1]
+) => {
+    let applied: boolean | undefined;
+    act(() => {
+        applied = form.current.applyServerErrors(error, options);
+    });
+    return applied;
+};
 
 describe('useStructureFormValidation', () => {
     // ─── form reactive state ──────────────────────────────────────────────
@@ -411,7 +447,10 @@ describe('useStructureFormValidation', () => {
                 useStructureFormValidation<ILoginForm>(INITIAL_LOGIN, loginSchema)
             );
             const handler = jest.fn();
-            const resultVal = await result.current.handleSubmit(handler);
+            let resultVal: boolean | undefined;
+            await act(async () => {
+                resultVal = await result.current.handleSubmit(handler);
+            });
             expect(resultVal).toBe(false);
             expect(handler).not.toHaveBeenCalled();
         });
@@ -424,7 +463,10 @@ describe('useStructureFormValidation', () => {
                 result.current.setForm({ email: 'valid@test.com', password: 'validPassword' });
             });
             const handler = jest.fn();
-            const resultVal = await result.current.handleSubmit(handler);
+            let resultVal: boolean | undefined;
+            await act(async () => {
+                resultVal = await result.current.handleSubmit(handler);
+            });
             expect(resultVal).toBe(true);
             expect(handler).toHaveBeenCalledWith({
                 email: 'valid@test.com',
@@ -443,7 +485,9 @@ describe('useStructureFormValidation', () => {
             const handler = jest.fn(() => {
                 capturedSubmitting = result.current.isSubmitting;
             });
-            await result.current.handleSubmit(handler);
+            await act(async () => {
+                await result.current.handleSubmit(handler);
+            });
             expect(capturedSubmitting).toBe(true);
             expect(result.current.isSubmitting).toBe(false);
         });
@@ -456,7 +500,11 @@ describe('useStructureFormValidation', () => {
                 result.current.setForm({ email: 'valid@test.com', password: 'validPassword' });
             });
             const handler = jest.fn().mockRejectedValue(new Error('network error'));
-            await expect(result.current.handleSubmit(handler)).rejects.toThrow('network error');
+            await expect(
+                act(async () => {
+                    await result.current.handleSubmit(handler);
+                })
+            ).rejects.toThrow('network error');
             expect(result.current.isSubmitting).toBe(false);
         });
 
@@ -465,9 +513,300 @@ describe('useStructureFormValidation', () => {
                 useStructureFormValidation<ILoginForm>(INITIAL_LOGIN, loginSchema)
             );
             const handler = jest.fn();
-            const resultVal = await result.current.handleSubmit(handler, false);
+            let resultVal: boolean | undefined;
+            await act(async () => {
+                resultVal = await result.current.handleSubmit(handler, false);
+            });
             expect(resultVal).toBe(true);
             expect(handler).toHaveBeenCalled();
+        });
+
+        // ─── showFormErrors ownership ─────────────────────────────────────────
+        // The hook, not the call site, decides when errors are on screen.
+
+        it('reveals the errors when validation rejects the submit', async () => {
+            const form = makeForm();
+            await act(async () => {
+                await form.current.handleSubmit(jest.fn());
+            });
+            expect(form.current.showFormErrors).toBe(true);
+        });
+
+        it('hides the errors once a submit validates', async () => {
+            const form = makeForm();
+            await act(async () => {
+                await form.current.handleSubmit(jest.fn());
+            });
+            act(() => {
+                form.current.setForm({ email: 'valid@test.com', password: 'validPassword' });
+            });
+            await act(async () => {
+                await form.current.handleSubmit(jest.fn().mockImplementation(async () => {}));
+            });
+            expect(form.current.showFormErrors).toBe(false);
+        });
+
+        it('leaves the errors hidden when the handler itself fails', async () => {
+            // A rejected API call says nothing about any particular field, so nothing to reveal.
+            const form = makeForm();
+            act(() => {
+                form.current.setForm({ email: 'valid@test.com', password: 'validPassword' });
+            });
+            const handler = jest.fn().mockRejectedValue(new Error('network error'));
+            await expect(
+                act(async () => {
+                    await form.current.handleSubmit(handler);
+                })
+            ).rejects.toThrow('network error');
+            expect(form.current.showFormErrors).toBe(false);
+        });
+
+        it('does not reveal anything when validation is skipped', async () => {
+            const form = makeForm();
+            await act(async () => {
+                await form.current.handleSubmit(
+                    jest.fn().mockImplementation(async () => {}),
+                    false
+                );
+            });
+            expect(form.current.showFormErrors).toBe(false);
+        });
+    });
+
+    // ─── revealErrors ─────────────────────────────────────────────────────
+
+    describe('revealErrors', () => {
+        it('turns showFormErrors on', async () => {
+            const form = makeForm();
+            await act(async () => {
+                await form.current.revealErrors();
+            });
+            expect(form.current.showFormErrors).toBe(true);
+        });
+
+        it('focuses the first invalid field of the given form', async () => {
+            const field = { focus: jest.fn() };
+            const formElement = createForm(field);
+            const form = makeForm({ formElement });
+
+            await act(async () => {
+                await form.current.revealErrors();
+            });
+
+            expect(formElement.querySelector).toHaveBeenCalledWith('[aria-invalid="true"]');
+            expect(field.focus).toHaveBeenCalled();
+        });
+
+        it('honours a custom selector, for kits that mark the wrapper', async () => {
+            const formElement = createForm({ focus: jest.fn() });
+            const form = makeForm({
+                formElement,
+                invalidFieldSelector: '.MuiFormControl-root .Mui-error input'
+            });
+
+            await act(async () => {
+                await form.current.revealErrors();
+            });
+
+            expect(formElement.querySelector).toHaveBeenCalledWith(
+                '.MuiFormControl-root .Mui-error input'
+            );
+        });
+
+        it('reads the form element through a ref object, so `ref={formRef}` works', async () => {
+            const field = { focus: jest.fn() };
+            const formElement: { current: IFieldContainer | undefined } = { current: undefined };
+            const form = makeForm({ formElement });
+
+            // Unmounted: nothing to focus, and nothing to throw either.
+            await act(async () => {
+                await form.current.revealErrors();
+            });
+            expect(field.focus).not.toHaveBeenCalled();
+
+            formElement.current = createForm(field);
+            await act(async () => {
+                await form.current.revealErrors();
+            });
+            expect(field.focus).toHaveBeenCalled();
+        });
+
+        it('is a pure state change when no form element was given', async () => {
+            // The SSR / node-test path: no DOM is touched at all.
+            const form = makeForm();
+            let resolved: unknown = 'unset';
+            await act(async () => {
+                resolved = await form.current.revealErrors();
+            });
+            expect(resolved).toBeUndefined();
+            expect(form.current.showFormErrors).toBe(true);
+        });
+
+        it('tolerates a match that cannot be focused', async () => {
+            const form = makeForm({ formElement: createForm({ notAFocusMethod: true }) });
+            let resolved: unknown = 'unset';
+            await act(async () => {
+                resolved = await form.current.revealErrors();
+            });
+            expect(resolved).toBeUndefined();
+        });
+
+        it('calls onInvalid with the errors on display', async () => {
+            const onInvalid = jest.fn();
+            const form = makeForm({ onInvalid });
+
+            act(() => {
+                form.current.validate();
+            });
+            await act(async () => {
+                await form.current.revealErrors();
+            });
+
+            expect(onInvalid).toHaveBeenCalledWith(
+                expect.objectContaining({ email: ['Invalid email address'] })
+            );
+        });
+
+        it('is reached by a failed handleSubmit, hook and focus included', async () => {
+            const field = { focus: jest.fn() };
+            const onInvalid = jest.fn();
+            const form = makeForm({ formElement: createForm(field), onInvalid });
+
+            let resultVal: boolean | undefined;
+            await act(async () => {
+                resultVal = await form.current.handleSubmit(jest.fn());
+            });
+
+            expect(resultVal).toBe(false);
+            expect(field.focus).toHaveBeenCalled();
+            expect(onInvalid).toHaveBeenCalled();
+        });
+    });
+
+    // ─── applyServerErrors ────────────────────────────────────────────────
+
+    describe('applyServerErrors', () => {
+        it('attaches a field map to the matching fields', () => {
+            const form = makeForm();
+            const applied = apply(form, {
+                errors: { email: 'Already taken', password: ['Too short', 'Too common'] }
+            });
+
+            expect(applied).toBe(true);
+            expect(form.current.formErrors.email).toEqual(['Already taken']);
+            expect(form.current.formErrors.password).toEqual(['Too short', 'Too common']);
+        });
+
+        it('reads a list of {field, message} objects', () => {
+            const form = makeForm();
+            apply(form, { errors: [{ field: 'email', message: 'Already taken' }] });
+            expect(form.current.formErrors.email).toEqual(['Already taken']);
+        });
+
+        it('reads express-validator’s param/msg spelling', () => {
+            const form = makeForm();
+            apply(form, { errors: [{ param: 'password', msg: 'Too short' }] });
+            expect(form.current.formErrors.password).toEqual(['Too short']);
+        });
+
+        it('reads a zod-shaped issue list, collapsing nested paths to their root field', () => {
+            const form = makeForm();
+            apply(form, {
+                issues: [{ path: ['email', 'domain'], message: 'Domain not allowed' }]
+            });
+            expect(form.current.formErrors.email).toEqual(['Domain not allowed']);
+        });
+
+        it('digs the errors out of an unwrapped body', () => {
+            const form = makeForm();
+            apply(form, { data: { errors: { email: 'Already taken' } } });
+            expect(form.current.formErrors.email).toEqual(['Already taken']);
+        });
+
+        it('digs the errors out of a raw axios error', () => {
+            const form = makeForm();
+            apply(form, { response: { data: { errors: { email: 'Already taken' } } } });
+            expect(form.current.formErrors.email).toEqual(['Already taken']);
+        });
+
+        it('renames server fields through the map option', () => {
+            const form = makeForm();
+            apply(
+                form,
+                { errors: { user_email: 'Already taken' } },
+                { map: { user_email: 'email' } }
+            );
+            expect(form.current.formErrors.email).toEqual(['Already taken']);
+        });
+
+        it('routes form-level messages to onUnmapped', () => {
+            const form = makeForm();
+            const onUnmapped = jest.fn();
+            const applied = apply(form, { errors: ['Payment declined'] }, { onUnmapped });
+
+            expect(applied).toBe(false);
+            expect(onUnmapped).toHaveBeenCalledWith(['Payment declined']);
+        });
+
+        it('routes errors about fields this form does not have to onUnmapped', () => {
+            const form = makeForm();
+            const onUnmapped = jest.fn();
+            apply(form, { errors: { captcha: 'Expired' } }, { onUnmapped });
+
+            expect(onUnmapped).toHaveBeenCalledWith(['Expired']);
+            expect(form.current.formErrors).toEqual({});
+        });
+
+        it('splits a mixed payload between the fields and onUnmapped', () => {
+            const form = makeForm();
+            const onUnmapped = jest.fn();
+            const applied = apply(
+                form,
+                { errors: [{ field: 'email', message: 'Already taken' }, 'Payment declined'] },
+                { onUnmapped }
+            );
+
+            expect(applied).toBe(true);
+            expect(form.current.formErrors.email).toEqual(['Already taken']);
+            expect(onUnmapped).toHaveBeenCalledWith(['Payment declined']);
+        });
+
+        it('reveals what it applied', () => {
+            const form = makeForm();
+            expect(form.current.showFormErrors).toBe(false);
+            apply(form, { errors: { email: 'Already taken' } });
+            expect(form.current.showFormErrors).toBe(true);
+        });
+
+        it('keeps errors the server said nothing about', () => {
+            // The API answered about `email`; that is not an all-clear for `password`.
+            const form = makeForm();
+            act(() => {
+                form.current.setFieldError('password', 'Too short');
+            });
+            apply(form, { errors: { email: 'Already taken' } });
+
+            expect(form.current.formErrors.password).toEqual(['Too short']);
+            expect(form.current.formErrors.email).toEqual(['Already taken']);
+        });
+
+        it('returns false, and changes nothing, for a rejection carrying no errors', () => {
+            const form = makeForm();
+            const applied = apply(form, new Error('network error'));
+
+            expect(applied).toBe(false);
+            expect(form.current.formErrors).toEqual({});
+            expect(form.current.showFormErrors).toBe(false);
+        });
+
+        it('ignores empty and non-string messages', () => {
+            const form = makeForm();
+            const applied = apply(form, {
+                errors: { email: ['', undefined, 42], password: [] }
+            });
+
+            expect(applied).toBe(false);
+            expect(form.current.formErrors).toEqual({});
         });
     });
 

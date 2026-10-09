@@ -13,9 +13,39 @@ validation, and toast/loading stores.
 npm install @guebbit/react-toolkit
 ```
 
-Peer dependencies: `react >= 18.0.0`, `zustand >= 4.0.0`.
+Peer dependencies: `react >= 18.0.0`, `react-dom >= 18.0.0`, `zustand >= 4.0.0`.
 
 ## Quick intro
+
+### `useStructureCrudApi` — a whole resource, from the calls that reach it
+
+The highest-level entry point, and the one to start from. Everything below is still available
+through it, so it is a convenience and never a ceiling.
+
+```ts
+import { useStructureCrudApi, useWatchList } from '@guebbit/react-toolkit';
+
+export const useProducts = () =>
+    useStructureCrudApi<IProduct, string, IProductFilters>(
+        {
+            list: () => listProducts().then((r) => r.data.items),
+            search: (filters, page, pageSize) =>
+                listProducts({ ...filters, page, pageSize }).then((r) => r.data.items),
+            get: (id) => getProductById(id).then((r) => r.data),
+            create: (data) => createProduct(data).then((r) => r.data),
+            update: (id, data) => updateProductById(id, data).then((r) => r.data),
+            remove: (id) => deleteProductById(id)
+        },
+        { identifiers: 'id' }
+    );
+
+// …and the resource is done: filters, pagination, caching, optimistic updates and rollback included
+const api = useProducts();
+useWatchList(api, { onError: notifyError });
+api.pageItemList; // the current search's current page
+```
+
+Every operation is optional — a read-only resource supplies `list` and `get` and nothing else.
 
 ### `useStructureRestApi` — fetch, cache, and mutate against a REST API
 
@@ -35,6 +65,22 @@ await users.updateTarget(
 );
 ```
 
+### `useStructureSearchApi` — the same, plus filtered pagination
+
+```ts
+import { useStructureSearchApi, useWatchSearch } from '@guebbit/react-toolkit';
+
+const [filters, setFilters] = useState({ text: '' });
+const products = useStructureSearchApi<IProduct, string, string, typeof filters>(() => filters);
+
+// re-runs on every pageCurrent/pageSize change; `search()` applies edited filters on demand
+const { search } = useWatchSearch(products, (currentFilters, page, pageSize) =>
+    listProducts({ ...currentFilters, page, pageSize }).then((r) => r.data.items)
+);
+
+products.pageItemList; // the current search's current page
+```
+
 ### `useStructureDataManagement` — normalized store, no networking
 
 ```ts
@@ -52,9 +98,30 @@ import { z } from 'zod';
 import { useStructureFormValidation } from '@guebbit/react-toolkit';
 
 const loginSchema = z.object({ email: z.string().email(), password: z.string().min(8) });
-const login = useStructureFormValidation({ email: '', password: '' }, loginSchema);
+const formElement = useRef<HTMLFormElement>(null);
+const login = useStructureFormValidation({ email: '', password: '' }, loginSchema, { formElement });
 
-await login.handleSubmit(async (data) => api.post('/login', data));
+// Owns `showFormErrors`: a rejected submit reveals the errors and focuses the first invalid field
+await login
+    .handleSubmit(async (data) => api.post('/login', data))
+    .catch((error) => {
+        // and the errors only the server can find go under the right input too
+        if (!login.applyServerErrors(error)) addMessage('Something went wrong');
+    });
+```
+
+### `useUploadProgress` — a progress bar for one upload, without an HTTP client
+
+```ts
+import { useUploadProgress } from '@guebbit/react-toolkit';
+
+// the one client-specific line, written once per app
+const { progress, isUploading, track } = useUploadProgress<AxiosRequestConfig>((onProgress) => ({
+    onUploadProgress: (event) => onProgress(event.progress ?? 0)
+}));
+
+// `enabled` off means no options are passed at all — no bar flashing for a payload with no file
+await track((options) => updateProduct(id, data, options), { enabled: !!file });
 ```
 
 ### `useNotificationsStore` — toasts, as a Zustand store

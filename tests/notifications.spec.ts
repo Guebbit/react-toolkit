@@ -13,8 +13,7 @@ describe('useNotificationsStore', () => {
     beforeEach(() => {
         // Reset Zustand store state before each test
         useNotificationsStore.setState({
-            history: [],
-            dialogs: {}
+            history: []
         });
     });
 
@@ -117,11 +116,6 @@ describe('useNotificationsStore', () => {
         const id = s1.history[0].id;
         const found = s1.findMessage(id);
         expect(found?.message).toBe('Find me');
-    });
-
-    it('dialogs are empty by default', () => {
-        const store = useNotificationsStore.getState();
-        expect(Object.keys(store.dialogs)).toHaveLength(0);
     });
 
     describe('auto-hide timeout', () => {

@@ -3,7 +3,7 @@ import { defineConfig } from 'vitepress'
 // https://vitepress.dev/reference/site-config
 export default defineConfig({
   title: '@guebbit/react-toolkit',
-  description: 'React 3 composables and Pinia stores for CRUD screens: caching, optimistic updates, rollback, and form validation.',
+  description: 'React hooks and Zustand stores for CRUD screens: caching, optimistic updates, rollback, and form validation.',
   base: '/react-toolkit/',
   themeConfig: {
     // https://vitepress.dev/reference/default-theme-config
@@ -22,11 +22,14 @@ export default defineConfig({
         ]
       },
       {
-        text: 'Composables',
+        text: 'Hooks',
         items: [
+          { text: 'useStructureCrudApi', link: '/composables/structure-crud-api' },
           { text: 'useStructureRestApi', link: '/composables/structure-rest-api' },
+          { text: 'useStructureSearchApi', link: '/composables/structure-search-api' },
           { text: 'useStructureDataManagement', link: '/composables/structure-data-management' },
-          { text: 'useStructureFormValidation', link: '/composables/structure-form-validation' }
+          { text: 'useStructureFormValidation', link: '/composables/structure-form-validation' },
+          { text: 'useUploadProgress', link: '/composables/upload-progress' }
         ]
       },
       {

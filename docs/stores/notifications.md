@@ -1,7 +1,6 @@
 # useNotificationsStore
 
-A Zustand store for toast-style messages and simple named dialog visibility
-flags.
+A Zustand store for toast-style messages.
 
 ## Quickstart
 
@@ -15,9 +14,6 @@ notifications.addMessage('Saved successfully', IToastType.SUCCESS, 4000)
 
 // Render only the visible ones
 notifications.getMessages() // IToastMessage[]
-
-// A named dialog flag — no dedicated open/close actions, just read/write the map
-notifications.dialogs.confirmDelete = true
 ```
 
 ## API
@@ -52,12 +48,6 @@ interface IToastMessage {
 | `hideMessage(id)`                           | Sets `visible = false` — the toast stays in `history`.                                   |
 | `showMessage(id)`                           | Sets `visible = true`.                                                                    |
 | `removeMessage(id)`                         | Permanently removes a toast from `history`.                                              |
-
-### Dialogs
-
-| Property   | Purpose                                                                          |
-| ------------ | --------------------------------------------------------------------------------------- |
-| `dialogs`   | `Record<string, boolean>` for arbitrary named dialog open/closed state. No dedicated actions; consumers read/write `dialogs[name]` directly. |
 
 ## Gotchas
 

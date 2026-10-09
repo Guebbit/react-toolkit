@@ -18,7 +18,6 @@ export interface IToastMessage {
 
 interface INotificationsState {
     history: IToastMessage[];
-    dialogs: Record<string, boolean>;
 }
 
 interface INotificationsActions {
@@ -28,11 +27,10 @@ interface INotificationsActions {
     hideMessage: (_id: string) => void;
     showMessage: (_id: string) => void;
     removeMessage: (_id: string) => void;
-    setDialogVisibility: (name: string, visible: boolean) => void;
 }
 
 /**
- * Notifications store for managing toast messages and dialogs
+ * Notifications store for managing toast messages
  */
 export const useNotificationsStore = create<INotificationsState & INotificationsActions>(
     (set, get) => ({
@@ -117,26 +115,6 @@ export const useNotificationsStore = create<INotificationsState & INotifications
         removeMessage: (_id: string) => {
             set((state) => ({
                 history: state.history.filter(({ id }) => id !== _id)
-            }));
-        },
-
-        // ________________ DIALOGS ________________
-
-        /**
-         * Manage all dialogs
-         * key is dialog name, value is dialog visibility (on/off)
-         */
-        dialogs: {},
-
-        /**
-         * Set dialog visibility
-         *
-         * @param name - dialog name
-         * @param visible - visibility state
-         */
-        setDialogVisibility: (name: string, visible: boolean) => {
-            set((state) => ({
-                dialogs: { ...state.dialogs, [name]: visible }
             }));
         }
     })

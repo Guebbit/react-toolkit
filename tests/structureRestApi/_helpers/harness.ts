@@ -62,7 +62,7 @@ function callThroughAct(
  * reads always forward to the latest render; function properties are
  * auto-wrapped in `act()` so the read that follows sees a flushed update.
  */
-function liveHandle<C extends object>(getCurrent: () => C): C {
+export function liveHandle<C extends object>(getCurrent: () => C): C {
     return new Proxy({} as C, {
         get(_target, property) {
             const current = getCurrent();

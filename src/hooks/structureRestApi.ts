@@ -3,6 +3,7 @@ import { QueryClient, CancelledError } from '@tanstack/query-core';
 import type { QueryKey } from '@tanstack/query-core';
 import { useStructureDataManagement } from './structureDataManagement';
 import { getUuid } from '@guebbit/js-toolkit';
+import { runAsPromise, withCleanup } from '../utils/promise';
 
 // ─── Type helpers ───────────────────────────────────────────────────────
 
@@ -161,10 +162,8 @@ const UNDEFINED_RESULT = Symbol('structure-rest-api/undefined-result');
 
 const toSafeQueryFunction =
     <R>(apiCall: () => Promise<R>) =>
-    async (): Promise<R | typeof UNDEFINED_RESULT> => {
-        const result = await apiCall();
-        return result === undefined ? UNDEFINED_RESULT : result;
-    };
+    (): Promise<R | typeof UNDEFINED_RESULT> =>
+        runAsPromise(apiCall).then((result) => (result === undefined ? UNDEFINED_RESULT : result));
 
 const fromSafeResult = <R>(result: R | typeof UNDEFINED_RESULT): R =>
     result === UNDEFINED_RESULT ? (undefined as R) : result;
@@ -498,7 +497,7 @@ export const useStructureRestApi = <
      * @param fetchSettings - forced, loading, lastUpdateKey, loadingKey, TTL
      */
     const fetchAny = useCallback(
-        async <R = unknown>(
+        <R = unknown>(
             apiCall: () => Promise<R>,
             fetchSettings: IFetchSettings = {}
         ): Promise<R> => {
@@ -510,17 +509,18 @@ export const useStructureRestApi = <
                 lastUpdateKey
             } = fetchSettings;
             if (showLoading) startLoading(loadingKey);
-            try {
-                if (!lastUpdateKey) return await apiCall();
-                const raw = await queryClient.fetchQuery({
-                    queryKey: anyKey(lastUpdateKey),
-                    queryFn: toSafeQueryFunction(apiCall),
-                    staleTime: forced ? 0 : getEffectiveTtl(callTtl)
-                });
-                return fromSafeResult(raw);
-            } finally {
+            const fetched = lastUpdateKey
+                ? queryClient
+                      .fetchQuery({
+                          queryKey: anyKey(lastUpdateKey),
+                          queryFn: toSafeQueryFunction(apiCall),
+                          staleTime: forced ? 0 : getEffectiveTtl(callTtl)
+                      })
+                      .then((raw) => fromSafeResult<R>(raw))
+                : runAsPromise(apiCall);
+            return withCleanup(fetched, () => {
                 if (showLoading) stopLoading(loadingKey);
-            }
+            });
         },
         [queryClient, anyKey, getEffectiveTtl, startLoading, stopLoading]
     );
@@ -537,7 +537,7 @@ export const useStructureRestApi = <
      *                        staleTime override)
      */
     const fetchAll = useCallback(
-        async <R = (T | undefined)[]>(
+        <R = (T | undefined)[]>(
             apiCall: () => Promise<R>,
             fetchSettings: IFetchSettings = {}
         ): Promise<R> => {
@@ -551,19 +551,24 @@ export const useStructureRestApi = <
                 merge = false
             } = fetchSettings;
             if (showLoading) startLoading(loadingKey);
-            try {
-                const result = await queryClient.fetchQuery({
-                    queryKey: listKey(lastUpdateKey),
-                    queryFn: toSafeQueryFunction(apiCall),
-                    staleTime: forced ? 0 : getEffectiveTtl(callTtl)
-                });
-                const items = asItems<T>(fromSafeResult(result));
-                ingestMany(items, { merge });
-                if (!mismatch) for (const item of items) seedTarget(createIdentifier(item), item);
-                return fromSafeResult(result);
-            } finally {
-                if (showLoading) stopLoading(loadingKey);
-            }
+            return withCleanup(
+                queryClient
+                    .fetchQuery({
+                        queryKey: listKey(lastUpdateKey),
+                        queryFn: toSafeQueryFunction(apiCall),
+                        staleTime: forced ? 0 : getEffectiveTtl(callTtl)
+                    })
+                    .then((result) => {
+                        const items = asItems<T>(fromSafeResult(result));
+                        ingestMany(items, { merge });
+                        if (!mismatch)
+                            for (const item of items) seedTarget(createIdentifier(item), item);
+                        return fromSafeResult<R>(result);
+                    }),
+                () => {
+                    if (showLoading) stopLoading(loadingKey);
+                }
+            );
         },
         [
             queryClient,
@@ -586,7 +591,7 @@ export const useStructureRestApi = <
      * @param fetchSettings - forced, loading, merge, mismatch, TTL (per-call staleTime override)
      */
     const fetchByParent = useCallback(
-        async <R = (T | undefined)[]>(
+        <R = (T | undefined)[]>(
             apiCall: () => Promise<R>,
             parentId: P,
             fetchSettings: IFetchSettings = {}
@@ -600,24 +605,28 @@ export const useStructureRestApi = <
                 merge = false
             } = fetchSettings;
             if (showLoading) startLoading(loadingKey);
-            try {
-                const result = await queryClient.fetchQuery({
-                    queryKey: parentKeyFor(parentId),
-                    queryFn: toSafeQueryFunction(apiCall),
-                    staleTime: forced ? 0 : getEffectiveTtl(callTtl)
-                });
-                const items = asItems<T>(fromSafeResult(result));
-                ingestMany(items, { merge: merge || mismatch });
-                for (const item of items) {
-                    const id = createIdentifier(item);
-                    addToParent(parentId, id);
-                    if (!mismatch) seedTarget(id, item);
+            return withCleanup(
+                queryClient
+                    .fetchQuery({
+                        queryKey: parentKeyFor(parentId),
+                        queryFn: toSafeQueryFunction(apiCall),
+                        staleTime: forced ? 0 : getEffectiveTtl(callTtl)
+                    })
+                    .then((result) => {
+                        const items = asItems<T>(fromSafeResult(result));
+                        ingestMany(items, { merge: merge || mismatch });
+                        for (const item of items) {
+                            const id = createIdentifier(item);
+                            addToParent(parentId, id);
+                            if (!mismatch) seedTarget(id, item);
+                        }
+                        removeDuplicateChildren(parentId);
+                        return fromSafeResult<R>(result);
+                    }),
+                () => {
+                    if (showLoading) stopLoading(loadingKey);
                 }
-                removeDuplicateChildren(parentId);
-                return fromSafeResult(result);
-            } finally {
-                if (showLoading) stopLoading(loadingKey);
-            }
+            );
         },
         [
             queryClient,
@@ -644,7 +653,7 @@ export const useStructureRestApi = <
      * @param fetchSettings - forced, loading, merge, lastUpdateKey, loadingKey, mismatch, TTL
      */
     const runFetchTarget = useCallback(
-        async <R = T>(
+        <R = T>(
             apiCall: () => Promise<R>,
             id: K | undefined,
             fetchSettings: IFetchSettings = {}
@@ -659,53 +668,54 @@ export const useStructureRestApi = <
                 merge = false
             } = fetchSettings;
             if (showLoading) startLoading(loadingKey);
-            try {
-                let result: R;
-                if (id === undefined) {
-                    result = await apiCall();
-                } else {
-                    try {
-                        result = fromSafeResult<R>(
-                            await queryClient.fetchQuery({
-                                queryKey: targetKey(id, lastUpdateKey),
-                                queryFn: toSafeQueryFunction(apiCall),
-                                staleTime: forced ? 0 : getEffectiveTtl(callTtl)
-                            })
-                        );
-                    } catch (error: unknown) {
-                        // A concurrent updateTarget/deleteTarget cancels this in-flight
-                        // fetch to apply its own newer value first. That is NOT a failure:
-                        // the caller just gets whatever is currently cached (their own
-                        // optimistic edit already won) instead of an error. Any other
-                        // error is a real failure and propagates.
-                        if (!(error instanceof CancelledError)) throw error;
-                        result = fromSafeResult<R>(
-                            queryClient.getQueryData(targetKey(id, lastUpdateKey)) as
-                                | R
-                                | typeof UNDEFINED_RESULT
-                        );
-                    }
-                }
 
-                if (result !== undefined) {
-                    ingestOne(result as unknown as T, { merge });
-                    // When `id` was given, the fetchQuery call above already seeded
-                    // targetKey(id, lastUpdateKey) — seeding again here would always
-                    // write the DEFAULT ('') bucket on top, collapsing every
-                    // lastUpdateKey back into one. Only the id-less path (no query key
-                    // to seed up front) needs an explicit seed once the id is known.
-                    if (id === undefined && !mismatch) {
-                        seedTarget(
-                            createIdentifier(result as unknown as T),
-                            result as unknown as T,
-                            lastUpdateKey
-                        );
+            const fetched: Promise<R> =
+                id === undefined
+                    ? runAsPromise(apiCall)
+                    : queryClient
+                          .fetchQuery({
+                              queryKey: targetKey(id, lastUpdateKey),
+                              queryFn: toSafeQueryFunction(apiCall),
+                              staleTime: forced ? 0 : getEffectiveTtl(callTtl)
+                          })
+                          .then((raw) => fromSafeResult<R>(raw))
+                          .catch((error: unknown) => {
+                              // A concurrent updateTarget/deleteTarget cancels this in-flight
+                              // fetch to apply its own newer value first. That is NOT a failure:
+                              // the caller just gets whatever is currently cached (their own
+                              // optimistic edit already won) instead of an error. Any other
+                              // error is a real failure and propagates.
+                              if (!(error instanceof CancelledError)) throw error;
+                              return fromSafeResult<R>(
+                                  queryClient.getQueryData(targetKey(id, lastUpdateKey)) as
+                                      | R
+                                      | typeof UNDEFINED_RESULT
+                              );
+                          });
+
+            return withCleanup(
+                fetched.then((result) => {
+                    if (result !== undefined) {
+                        ingestOne(result as unknown as T, { merge });
+                        // When `id` was given, the fetchQuery call above already seeded
+                        // targetKey(id, lastUpdateKey) — seeding again here would always
+                        // write the DEFAULT ('') bucket on top, collapsing every
+                        // lastUpdateKey back into one. Only the id-less path (no query key
+                        // to seed up front) needs an explicit seed once the id is known.
+                        if (id === undefined && !mismatch) {
+                            seedTarget(
+                                createIdentifier(result as unknown as T),
+                                result as unknown as T,
+                                lastUpdateKey
+                            );
+                        }
                     }
+                    return result;
+                }),
+                () => {
+                    if (showLoading) stopLoading(loadingKey);
                 }
-                return result;
-            } finally {
-                if (showLoading) stopLoading(loadingKey);
-            }
+            );
         },
         [
             queryClient,
@@ -736,30 +746,34 @@ export const useStructureRestApi = <
      * @param fetchSettings - forced, loading, loadingKey, TTL (per-call staleTime override)
      */
     const fetchMultiple = useCallback(
-        async (
+        (
             apiCall: (ids: K[]) => Promise<(T | undefined)[]>,
             ids: K[] = [],
             fetchSettings: IFetchSettings = {}
         ): Promise<(T | undefined)[]> => {
-            if (ids.length === 0) return [];
+            if (ids.length === 0) return Promise.resolve([]);
             const { loading: showLoading = true, loadingKey, forced, TTL: callTtl } = fetchSettings;
             const { expiredIds } = forced
                 ? { expiredIds: ids }
                 : checkMultiple(ids, { TTL: callTtl });
 
-            if (expiredIds.length > 0) {
-                if (showLoading) startLoading(loadingKey);
-                try {
-                    const items = asItems<T>(await apiCall(expiredIds));
+            // getRecord reads the live dictionary, so the items ingested below are already
+            // visible here alongside the ones this call never touched.
+            const collect = () => ids.map((id) => getRecord(id));
+
+            if (expiredIds.length === 0) return Promise.resolve(collect());
+
+            if (showLoading) startLoading(loadingKey);
+            return withCleanup(
+                runAsPromise(() => apiCall(expiredIds)).then((response) => {
+                    const items = asItems<T>(response);
                     ingestMany(items);
                     for (const item of items) seedTarget(createIdentifier(item), item);
-                } finally {
+                }),
+                () => {
                     if (showLoading) stopLoading(loadingKey);
                 }
-            }
-            // getRecord reads the live dictionary, so the items ingested just above
-            // are already visible here alongside the ones this call never touched.
-            return ids.map((id) => getRecord(id));
+            ).then(collect);
         },
         [
             checkMultiple,
@@ -785,7 +799,7 @@ export const useStructureRestApi = <
      *                        cache buckets, e.g. per filter set), loadingKey, mismatch, TTL
      */
     const fetchPaginate = useCallback(
-        async <R = (T | undefined)[]>(
+        <R = (T | undefined)[]>(
             apiCall: () => Promise<R>,
             page: number,
             pageSize: number,
@@ -801,19 +815,24 @@ export const useStructureRestApi = <
                 merge = false
             } = fetchSettings;
             if (showLoading) startLoading(loadingKey);
-            try {
-                const result = await queryClient.fetchQuery({
-                    queryKey: paginateKey(lastUpdateKey, page, pageSize),
-                    queryFn: toSafeQueryFunction(apiCall),
-                    staleTime: forced ? 0 : getEffectiveTtl(callTtl)
-                });
-                const items = asItems<T>(fromSafeResult(result));
-                ingestMany(items, { merge });
-                if (!mismatch) for (const item of items) seedTarget(createIdentifier(item), item);
-                return fromSafeResult(result);
-            } finally {
-                if (showLoading) stopLoading(loadingKey);
-            }
+            return withCleanup(
+                queryClient
+                    .fetchQuery({
+                        queryKey: paginateKey(lastUpdateKey, page, pageSize),
+                        queryFn: toSafeQueryFunction(apiCall),
+                        staleTime: forced ? 0 : getEffectiveTtl(callTtl)
+                    })
+                    .then((result) => {
+                        const items = asItems<T>(fromSafeResult(result));
+                        ingestMany(items, { merge });
+                        if (!mismatch)
+                            for (const item of items) seedTarget(createIdentifier(item), item);
+                        return fromSafeResult<R>(result);
+                    }),
+                () => {
+                    if (showLoading) stopLoading(loadingKey);
+                }
+            );
         },
         [
             queryClient,
@@ -865,7 +884,7 @@ export const useStructureRestApi = <
      * @param fetchSettings - loading, loadingKey, fetchLike (seed the target cache, default true)
      */
     const createTarget = useCallback(
-        async <R = T>(
+        <R = T>(
             apiCall: () => Promise<R>,
             dummyData?: Partial<T>,
             fetchSettings: IFetchSettings = {}
@@ -876,23 +895,27 @@ export const useStructureRestApi = <
             if (dummyData !== undefined) ingestOne(dummyData as T);
 
             if (showLoading) startLoading(loadingKey);
-            try {
-                const result = await apiCall();
-                if (dummyId !== undefined) deleteRecord(dummyId);
-                if (result !== undefined) {
-                    const id = createIdentifier(result as unknown as T);
-                    ingestOne(result as unknown as T);
-                    if (fetchLike) seedTarget(id, result as unknown as T);
-                    // A new record can belong in cached lists that don't know about it yet
-                    invalidateListQueries();
+            return withCleanup(
+                runAsPromise(apiCall)
+                    .then((result) => {
+                        if (dummyId !== undefined) deleteRecord(dummyId);
+                        if (result !== undefined) {
+                            const id = createIdentifier(result as unknown as T);
+                            ingestOne(result as unknown as T);
+                            if (fetchLike) seedTarget(id, result as unknown as T);
+                            // A new record can belong in cached lists that don't know about it yet
+                            invalidateListQueries();
+                        }
+                        return result;
+                    })
+                    .catch((error: unknown) => {
+                        if (dummyId !== undefined) deleteRecord(dummyId);
+                        throw error;
+                    }),
+                () => {
+                    if (showLoading) stopLoading(loadingKey);
                 }
-                return result;
-            } catch (error: unknown) {
-                if (dummyId !== undefined) deleteRecord(dummyId);
-                throw error;
-            } finally {
-                if (showLoading) stopLoading(loadingKey);
-            }
+            );
         },
         [
             createIdentifier,
@@ -916,7 +939,7 @@ export const useStructureRestApi = <
      *                        new data, default true)
      */
     const updateTarget = useCallback(
-        async <R = T>(
+        <R = T>(
             apiCall: () => Promise<R>,
             itemData: Partial<T>,
             id: K,
@@ -937,37 +960,44 @@ export const useStructureRestApi = <
             // BEFORE the optimistic edit: otherwise an older response could resolve
             // afterwards and clobber it with pre-update data. Mirrors TanStack's
             // optimistic-update recipe (cancelQueries before the optimistic write).
-            await queryClient.cancelQueries({ queryKey: [instanceLoadingKey, 'target', id] });
+            return queryClient
+                .cancelQueries({ queryKey: [instanceLoadingKey, 'target', id] })
+                .then(() => {
+                    editRecord(itemData, id);
 
-            editRecord(itemData, id);
-
-            if (showLoading) startLoading(loadingKey);
-            try {
-                const result = await apiCall();
-                if (result !== undefined) {
-                    // fetchAgain=false: the response isn't the full item (e.g. a bare
-                    // acknowledgement), so keep the optimistic edit as the final record.
-                    let finalRecord = optimisticRecord;
-                    if (fetchAgain) {
-                        finalRecord = merge
-                            ? ({ ...optimisticRecord, ...result } as T)
-                            : (result as unknown as T);
-                        if (merge) editRecord(result as Partial<T>, id);
-                        else replaceRecord(finalRecord, id);
-                    }
-                    if (fetchLike) seedTarget(id, finalRecord);
-                }
-                return result;
-            } catch (error: unknown) {
-                if (rollbackSnapshot === undefined) {
-                    deleteRecord(id);
-                } else {
-                    replaceRecord(rollbackSnapshot, id);
-                }
-                throw error;
-            } finally {
-                if (showLoading) stopLoading(loadingKey);
-            }
+                    if (showLoading) startLoading(loadingKey);
+                    return withCleanup(
+                        runAsPromise(apiCall)
+                            .then((result) => {
+                                if (result !== undefined) {
+                                    // fetchAgain=false: the response isn't the full item (e.g. a
+                                    // bare acknowledgement), so keep the optimistic edit as the
+                                    // final record.
+                                    let finalRecord = optimisticRecord;
+                                    if (fetchAgain) {
+                                        finalRecord = merge
+                                            ? ({ ...optimisticRecord, ...result } as T)
+                                            : (result as unknown as T);
+                                        if (merge) editRecord(result as Partial<T>, id);
+                                        else replaceRecord(finalRecord, id);
+                                    }
+                                    if (fetchLike) seedTarget(id, finalRecord);
+                                }
+                                return result;
+                            })
+                            .catch((error: unknown) => {
+                                if (rollbackSnapshot === undefined) {
+                                    deleteRecord(id);
+                                } else {
+                                    replaceRecord(rollbackSnapshot, id);
+                                }
+                                throw error;
+                            }),
+                        () => {
+                            if (showLoading) stopLoading(loadingKey);
+                        }
+                    );
+                });
         },
         [
             getRecord,
@@ -988,7 +1018,7 @@ export const useStructureRestApi = <
      * @param fetchSettings - loading, loadingKey
      */
     const deleteTarget = useCallback(
-        async <R = unknown>(
+        <R = unknown>(
             apiCall: () => Promise<R>,
             id: K,
             fetchSettings: IFetchSettings = {}
@@ -999,23 +1029,29 @@ export const useStructureRestApi = <
             // Cancel any in-flight fetchTarget for this id first, same reasoning as
             // updateTarget: an older response resolving after the delete below would
             // re-add stale data.
-            await queryClient.cancelQueries({ queryKey: [instanceLoadingKey, 'target', id] });
+            return queryClient
+                .cancelQueries({ queryKey: [instanceLoadingKey, 'target', id] })
+                .then(() => {
+                    deleteRecord(id);
+                    queryClient.removeQueries({ queryKey: [instanceLoadingKey, 'target', id] });
 
-            deleteRecord(id);
-            queryClient.removeQueries({ queryKey: [instanceLoadingKey, 'target', id] });
-
-            if (showLoading) startLoading(loadingKey);
-            try {
-                const result = await apiCall();
-                // Cached lists may still list this id; make them refetch next time
-                invalidateListQueries();
-                return result;
-            } catch (error: unknown) {
-                if (rollbackSnapshot !== undefined) addRecord(rollbackSnapshot);
-                throw error;
-            } finally {
-                if (showLoading) stopLoading(loadingKey);
-            }
+                    if (showLoading) startLoading(loadingKey);
+                    return withCleanup(
+                        runAsPromise(apiCall)
+                            .then((result) => {
+                                // Cached lists may still list this id; make them refetch next time
+                                invalidateListQueries();
+                                return result;
+                            })
+                            .catch((error: unknown) => {
+                                if (rollbackSnapshot !== undefined) addRecord(rollbackSnapshot);
+                                throw error;
+                            }),
+                        () => {
+                            if (showLoading) stopLoading(loadingKey);
+                        }
+                    );
+                });
         },
         [
             getRecord,
